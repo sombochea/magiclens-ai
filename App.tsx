@@ -5,7 +5,9 @@ import { initDB, saveItem, getItems, deleteItem } from './services/storageServic
 import { 
   IconWand, IconDownload, IconUpload, IconTrash, IconPen, 
   IconSpray, IconMarker, IconEraser, IconBrush, IconUndo, 
-  IconRedo, IconCamera, IconX, IconHistory, IconMove
+  IconRedo, IconCamera, IconX, IconHistory, IconMove,
+  IconHand, IconZoomIn, IconZoomOut, IconMinimize, IconMaximize,
+  IconSave, IconRestore
 } from './components/Icons';
 
 const App: React.FC = () => {
@@ -26,6 +28,7 @@ const App: React.FC = () => {
   const [editedImages, setEditedImages] = useState<string[]>([]);
   
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
   
   // Undo/Redo History
   const [history, setHistory] = useState<ImageData[]>([]);
@@ -39,21 +42,32 @@ const App: React.FC = () => {
   // Brush State
   const [isDrawing, setIsDrawing] = useState(false);
   const [brushColor, setBrushColor] = useState('#FF0055');
-  const [brushSize, setBrushSize] = useState(20); // Default larger for spray
-  const [brushType, setBrushType] = useState<'pen' | 'spray' | 'marker' | 'eraser'>('pen');
+  const [brushSize, setBrushSize] = useState(20);
+  const [brushType, setBrushType] = useState<'pen' | 'spray' | 'marker' | 'eraser' | 'pan'>('pen');
 
-  // Toolbar Dragging State
+  // Zoom & Pan State
+  const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
+  const [isPanning, setIsPanning] = useState(false);
+  const panStartRef = useRef({ x: 0, y: 0 });
+
+  // Toolbar State
   const [toolbarPos, setToolbarPos] = useState({ x: 0, y: 0 });
   const [isDraggingToolbar, setIsDraggingToolbar] = useState(false);
+  const [isToolbarMinimized, setIsToolbarMinimized] = useState(false);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef({ x: 0, y: 0 });
 
   // -- Gallery / History State --
   const [galleryItems, setGalleryItems] = useState<HistoryItem[]>([]);
+  
+  // -- LocalStorage Session State --
+  const [hasSavedSession, setHasSavedSession] = useState(false);
 
-  // Init DB
+  // Init DB and Check Session
   useEffect(() => {
     initDB().then(() => loadGallery());
+    const saved = localStorage.getItem('magicLens_session');
+    setHasSavedSession(!!saved);
   }, []);
 
   const loadGallery = async () => {
@@ -85,7 +99,6 @@ const App: React.FC = () => {
       const results = await generateImage(genPrompt, aspectRatio, imageSize);
       setGeneratedImages(prev => [...results, ...prev]);
       
-      // Save to History
       const newItem: HistoryItem = {
         id: generateId(),
         type: 'generated',
@@ -111,9 +124,49 @@ const App: React.FC = () => {
       const reader = new FileReader();
       reader.onload = (ev) => {
         setEditPreview(ev.target?.result as string);
+        setTransform({ x: 0, y: 0, scale: 1 }); // Reset zoom
       };
       reader.readAsDataURL(file);
       setEditedImages([]);
+    }
+  };
+
+  // Session Management
+  const saveSession = () => {
+    if (!canvasRef.current) return;
+    try {
+      const sessionData = {
+        image: canvasRef.current.toDataURL(),
+        prompt: editPrompt,
+        brushColor,
+        brushSize,
+        brushType,
+        transform
+      };
+      localStorage.setItem('magicLens_session', JSON.stringify(sessionData));
+      setHasSavedSession(true);
+      alert("Session saved successfully!");
+    } catch (e) {
+      console.error(e);
+      alert("Failed to save session. The image might be too large for local storage.");
+    }
+  };
+
+  const loadSession = () => {
+    try {
+      const saved = localStorage.getItem('magicLens_session');
+      if (saved) {
+        const session = JSON.parse(saved);
+        setEditPrompt(session.prompt || '');
+        setBrushColor(session.brushColor || '#FF0055');
+        setBrushSize(session.brushSize || 20);
+        setBrushType(session.brushType || 'pen');
+        setTransform(session.transform || { x: 0, y: 0, scale: 1 });
+        setEditPreview(session.image); // This triggers the useEffect to redraw canvas
+      }
+    } catch (e) {
+       console.error(e);
+       alert("Failed to load session.");
     }
   };
 
@@ -155,7 +208,7 @@ const App: React.FC = () => {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const dataUrl = canvas.toDataURL('image/png');
         setEditPreview(dataUrl);
-        // Convert to file for consistency
+        setTransform({ x: 0, y: 0, scale: 1 });
         fetch(dataUrl)
           .then(res => res.blob())
           .then(blob => {
@@ -179,7 +232,6 @@ const App: React.FC = () => {
     const newHistory = history.slice(0, historyStep + 1);
     newHistory.push(imageData);
     
-    // Limit history size to prevent memory issues
     if (newHistory.length > 20) {
       newHistory.shift();
     } else {
@@ -215,10 +267,8 @@ const App: React.FC = () => {
   // --- Toolbar Dragging Logic ---
   const handleDragStart = (e: React.PointerEvent) => {
     if (toolbarRef.current) {
-      // Prevent default to avoid scrolling on touch devices if only dragging handle
       e.preventDefault();
-      e.stopPropagation(); // Stop bubbling to canvas
-
+      e.stopPropagation(); 
       toolbarRef.current.setPointerCapture(e.pointerId);
       setIsDraggingToolbar(true);
       dragStartRef.current = {
@@ -244,42 +294,51 @@ const App: React.FC = () => {
     }
   };
 
+  // --- Zoom/Pan Logic ---
+  const handleZoomIn = () => setTransform(p => ({ ...p, scale: Math.min(p.scale + 0.5, 5) }));
+  const handleZoomOut = () => setTransform(p => ({ ...p, scale: Math.max(p.scale - 0.5, 0.5) }));
+  const handleResetZoom = () => setTransform({ x: 0, y: 0, scale: 1 });
+
   // --- Drawing Logic ---
   const getCanvasPoint = (e: React.MouseEvent | React.TouchEvent, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
     const clientX = ('touches' in e) ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
     const clientY = ('touches' in e) ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
-    return {
-      x: clientX - rect.left,
-      y: clientY - rect.top
-    };
+    const xRelative = clientX - rect.left;
+    const yRelative = clientY - rect.top;
+    const x = xRelative * (canvas.width / rect.width);
+    const y = yRelative * (canvas.height / rect.height);
+    return { x, y };
   };
 
   const sprayPaint = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, size: number) => {
     ctx.fillStyle = color;
-    // Increased density and randomness for better effect
     const density = Math.floor(size * 1.5); 
     for (let i = 0; i < density; i++) {
       const angle = Math.random() * 2 * Math.PI;
-      const radius = Math.sqrt(Math.random()) * size; // Uniform distribution within circle
+      const radius = Math.sqrt(Math.random()) * size; 
       const dotX = x + radius * Math.cos(angle);
       const dotY = y + radius * Math.sin(angle);
-      
-      // Random dot size for texture
       const dotSize = Math.random() * 1.5 + 0.5;
       
-      ctx.globalAlpha = Math.random() * 0.5 + 0.2; // Variable opacity
+      ctx.globalAlpha = Math.random() * 0.5 + 0.2; 
       ctx.beginPath();
       ctx.arc(dotX, dotY, dotSize, 0, Math.PI * 2);
       ctx.fill();
     }
-    // Reset alpha used for other brushes
     ctx.globalAlpha = 1.0; 
   };
 
-  const handleCanvasDrawStart = (e: React.MouseEvent | React.TouchEvent) => {
-    // If dragging toolbar via touch, don't draw
+  const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
     if (isDraggingToolbar) return;
+
+    if (brushType === 'pan') {
+      setIsPanning(true);
+      const clientX = ('touches' in e) ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+      const clientY = ('touches' in e) ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+      panStartRef.current = { x: clientX - transform.x, y: clientY - transform.y };
+      return;
+    }
 
     setIsDrawing(true);
     const canvas = canvasRef.current;
@@ -300,10 +359,9 @@ const App: React.FC = () => {
       ctx.globalAlpha = 1;
     } else if (brushType === 'marker') {
       ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = 0.5; // Highlighter effect
+      ctx.globalAlpha = 0.5;
     } else if (brushType === 'spray') {
       ctx.globalCompositeOperation = 'source-over';
-      // Alpha is handled inside sprayPaint
     } else {
       ctx.globalCompositeOperation = 'source-over';
       ctx.globalAlpha = 1;
@@ -322,11 +380,20 @@ const App: React.FC = () => {
     }
   };
 
-  const handleCanvasDrawMove = (e: React.MouseEvent | React.TouchEvent) => {
+  const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
+    if (isPanning) {
+      e.preventDefault(); 
+      const clientX = ('touches' in e) ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+      const clientY = ('touches' in e) ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+      setTransform(prev => ({
+        ...prev,
+        x: clientX - panStartRef.current.x,
+        y: clientY - panStartRef.current.y
+      }));
+      return;
+    }
+
     if (!isDrawing) return;
-    
-    // Prevent scrolling on mobile while drawing
-    // if (e.cancelable) e.preventDefault(); 
     
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -337,7 +404,7 @@ const App: React.FC = () => {
     
     if (brushType === 'spray') {
       sprayPaint(ctx, x, y, brushColor, brushSize);
-      ctx.beginPath(); // Reset path to avoid connecting spray points with lines
+      ctx.beginPath(); 
       ctx.moveTo(x, y);
     } else {
       ctx.lineTo(x, y);
@@ -347,17 +414,19 @@ const App: React.FC = () => {
     }
   };
 
-  const handleCanvasDrawEnd = () => {
+  const handlePointerUp = () => {
+    if (isPanning) {
+      setIsPanning(false);
+    }
     if (isDrawing) {
       setIsDrawing(false);
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext('2d');
       if (ctx) {
         ctx.beginPath();
-        // Reset global alpha just in case
         ctx.globalAlpha = 1;
       }
-      saveHistory(); // Save state after stroke
+      saveHistory(); 
     }
   };
 
@@ -369,18 +438,15 @@ const App: React.FC = () => {
       const img = new Image();
       img.src = editPreview;
       img.onload = () => {
-        // Ensure max width fits screen on mobile
-        const containerWidth = window.innerWidth - 32; // padding
-        const maxCanvasWidth = Math.min(containerWidth, 800);
+        const maxDim = 2048; 
+        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
         
-        const ratio = img.height / img.width;
-        canvas.width = maxCanvasWidth;
-        canvas.height = maxCanvasWidth * ratio;
+        canvas.width = img.width * scale;
+        canvas.height = img.height * scale;
         
         ctx?.clearRect(0,0, canvas.width, canvas.height);
         ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
         
-        // Reset and Init History
         const initialData = ctx?.getImageData(0, 0, canvas.width, canvas.height);
         if (initialData) {
             setHistory([initialData]);
@@ -410,7 +476,6 @@ const App: React.FC = () => {
       const results = await editImage(base64Canvas, editPrompt);
       setEditedImages(results);
 
-      // Save to History
       const newItem: HistoryItem = {
         id: generateId(),
         type: 'edited',
@@ -439,14 +504,14 @@ const App: React.FC = () => {
   const BrushBtn = ({ type, icon: Icon, active, onClick }: any) => (
     <button
       onClick={onClick}
-      className={`p-2 rounded-lg transition-all ${active ? 'bg-indigo-600 text-white shadow-lg scale-110' : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'}`}
+      className={`p-2.5 rounded-lg transition-all flex items-center justify-center ${active ? 'bg-indigo-600 text-white shadow-lg ring-2 ring-indigo-400' : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'}`}
     >
       <Icon className="w-5 h-5" />
     </button>
   );
 
   return (
-    <div className="min-h-screen bg-black text-gray-100 flex flex-col pb-20 md:pb-0 font-sans">
+    <div className="fixed inset-0 bg-black text-gray-100 flex flex-col font-sans touch-manipulation">
       
       {/* Camera Overlay */}
       {showCamera && (
@@ -472,147 +537,173 @@ const App: React.FC = () => {
       )}
 
       {/* Header */}
-      <header className="p-4 border-b border-gray-800 flex items-center justify-between sticky top-0 bg-black/80 backdrop-blur-md z-10">
+      <header className="p-4 border-b border-gray-800 flex items-center justify-between bg-black/80 backdrop-blur-md z-30 shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center">
             <IconWand className="text-white w-5 h-5" />
           </div>
           <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">
-            MagicLens AI
+            MagicLens
           </h1>
         </div>
       </header>
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto p-4 max-w-5xl mx-auto w-full">
+      <main className="flex-1 flex flex-col min-h-0 relative w-full">
         
         {/* MODE: GENERATE */}
         {mode === AppMode.GENERATE && (
-          <div className="space-y-6 animate-fade-in">
-            <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
-              <h2 className="text-2xl font-bold mb-4 text-white">Create New Worlds</h2>
-              <p className="text-gray-400 mb-6 text-sm">Powered by Gemini 3.0 Pro Image Preview (Nano Banana Pro)</p>
-              
-              <div className="space-y-4">
-                <textarea
-                  value={genPrompt}
-                  onChange={(e) => setGenPrompt(e.target.value)}
-                  placeholder="Describe the image you want to create..."
-                  className="w-full bg-gray-950 border border-gray-700 rounded-xl p-4 focus:ring-2 focus:ring-purple-500 focus:outline-none transition-all resize-none h-32 text-lg"
-                />
+          <div className="flex-1 overflow-y-auto p-4 animate-fade-in pb-32">
+            <div className="max-w-5xl mx-auto space-y-6">
+              <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
+                <h2 className="text-2xl font-bold mb-4 text-white">Create</h2>
+                <p className="text-gray-400 mb-6 text-sm">Gemini 3.0 Pro Image Preview</p>
+                
+                <div className="space-y-4">
+                  <textarea
+                    value={genPrompt}
+                    onChange={(e) => setGenPrompt(e.target.value)}
+                    placeholder="Describe the image you want to create..."
+                    className="w-full bg-gray-950 border border-gray-700 rounded-xl p-4 focus:ring-2 focus:ring-purple-500 focus:outline-none transition-all resize-none h-32 text-lg"
+                  />
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Aspect Ratio</label>
-                    <select 
-                      value={aspectRatio}
-                      onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}
-                      className="w-full bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm focus:ring-2 focus:ring-purple-500"
-                    >
-                      {Object.values(AspectRatio).map(r => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Resolution</label>
-                    <div className="flex bg-gray-800 rounded-lg p-1 border border-gray-700">
-                      {Object.values(ImageResolution).map(r => (
-                        <button
-                          key={r}
-                          onClick={() => setImageSize(r)}
-                          className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${imageSize === r ? 'bg-gray-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}
-                        >
-                          {r}
-                        </button>
-                      ))}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Aspect Ratio</label>
+                      <select 
+                        value={aspectRatio}
+                        onChange={(e) => setAspectRatio(e.target.value as AspectRatio)}
+                        className="w-full bg-gray-800 border border-gray-700 rounded-lg p-3 text-sm focus:ring-2 focus:ring-purple-500"
+                      >
+                        {Object.values(AspectRatio).map(r => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Resolution</label>
+                      <div className="flex bg-gray-800 rounded-lg p-1 border border-gray-700">
+                        {Object.values(ImageResolution).map(r => (
+                          <button
+                            key={r}
+                            onClick={() => setImageSize(r)}
+                            className={`flex-1 py-2 text-sm font-medium rounded-md transition-all ${imageSize === r ? 'bg-gray-600 text-white shadow' : 'text-gray-400 hover:text-white'}`}
+                          >
+                            {r}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                   </div>
-                </div>
 
-                <button
-                  onClick={handleGenerate}
-                  disabled={isGenerating || !genPrompt}
-                  className="w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl font-bold text-white shadow-lg hover:shadow-purple-500/20 disabled:opacity-50 disabled:cursor-not-allowed transition-all transform active:scale-95 flex items-center justify-center gap-2"
-                >
-                  {isGenerating ? (
-                    <>
-                      <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"/>
-                      Dreaming...
-                    </>
-                  ) : (
-                    <>
-                      <IconWand className="w-5 h-5" />
-                      Generate Magic
-                    </>
-                  )}
-                </button>
+                  <button
+                    onClick={handleGenerate}
+                    disabled={isGenerating || !genPrompt}
+                    className="w-full py-4 bg-gradient-to-r from-indigo-600 to-purple-600 rounded-xl font-bold text-white shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
+                  >
+                    {isGenerating ? "Dreaming..." : <> <IconWand className="w-5 h-5" /> Generate Magic </>}
+                  </button>
+                </div>
               </div>
-            </div>
 
-            {/* Results Grid */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {generatedImages.map((src, idx) => (
-                <div key={idx} className="group relative rounded-2xl overflow-hidden border border-gray-800 shadow-2xl">
-                  <img src={src} alt="Generated" className="w-full h-auto object-cover" />
-                  <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
-                    <button 
-                      onClick={() => downloadImage(src, `magic-gen-${Date.now()}.png`)}
-                      className="flex items-center gap-2 px-4 py-2 bg-white text-black rounded-full font-bold hover:scale-105 transition-transform"
-                    >
-                      <IconDownload className="w-4 h-4" /> Save
-                    </button>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {generatedImages.map((src, idx) => (
+                  <div key={idx} className="group relative rounded-2xl overflow-hidden border border-gray-800 shadow-2xl">
+                    <img src={src} alt="Generated" className="w-full h-auto object-cover" />
+                    <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
+                      <button 
+                        onClick={() => downloadImage(src, `magic-gen-${Date.now()}.png`)}
+                        className="flex items-center gap-2 px-4 py-2 bg-white text-black rounded-full font-bold hover:scale-105 transition-transform"
+                      >
+                        <IconDownload className="w-4 h-4" /> Save
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         )}
 
         {/* MODE: EDIT */}
         {mode === AppMode.EDIT && (
-          <div className="space-y-6 animate-fade-in pb-24 md:pb-0">
-             <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
-              <h2 className="text-2xl font-bold mb-2 text-white">Magic Editor</h2>
-              <p className="text-gray-400 mb-6 text-sm">Upload or capture a photo, doodle on it, and transform it.</p>
-
+          <div className="flex-1 flex flex-col relative overflow-hidden animate-fade-in">
               {!editPreview ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 h-64">
-                   <label className="flex flex-col items-center justify-center h-full border-2 border-gray-700 border-dashed rounded-2xl cursor-pointer hover:bg-gray-800/50 transition-all">
-                    <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                      <IconUpload className="w-10 h-10 mb-3 text-indigo-500" />
-                      <p className="text-sm text-gray-400 font-semibold">Upload Photo</p>
-                    </div>
-                    <input type="file" className="hidden" accept="image/*" onChange={handleEditFileChange} />
-                  </label>
-                  
-                  <button 
-                    onClick={startCamera}
-                    className="flex flex-col items-center justify-center h-full border-2 border-gray-700 border-dashed rounded-2xl cursor-pointer hover:bg-gray-800/50 transition-all"
-                  >
-                     <div className="flex flex-col items-center justify-center pt-5 pb-6">
-                      <IconCamera className="w-10 h-10 mb-3 text-purple-500" />
-                      <p className="text-sm text-gray-400 font-semibold">Take Photo</p>
-                    </div>
-                  </button>
+                <div className="flex-1 overflow-y-auto p-4 flex flex-col justify-center">
+                   <div className="max-w-lg mx-auto w-full pb-24 space-y-4">
+                     <div className="bg-gray-900 p-8 rounded-3xl border border-gray-800 text-center shadow-2xl">
+                       <h2 className="text-3xl font-bold mb-2">Magic Canvas</h2>
+                       <p className="text-gray-400 mb-8">Start by choosing a source</p>
+                       
+                       <div className="grid grid-cols-2 gap-4">
+                          <label className="flex flex-col items-center justify-center h-40 bg-gray-800 rounded-2xl cursor-pointer hover:bg-gray-700 transition-all border border-gray-700 hover:border-indigo-500 group">
+                            <IconUpload className="w-10 h-10 mb-3 text-indigo-500 group-hover:scale-110 transition-transform" />
+                            <span className="font-semibold text-sm">Upload</span>
+                            <input type="file" className="hidden" accept="image/*" onChange={handleEditFileChange} />
+                          </label>
+                          <button 
+                            onClick={startCamera}
+                            className="flex flex-col items-center justify-center h-40 bg-gray-800 rounded-2xl cursor-pointer hover:bg-gray-700 transition-all border border-gray-700 hover:border-purple-500 group"
+                          >
+                            <IconCamera className="w-10 h-10 mb-3 text-purple-500 group-hover:scale-110 transition-transform" />
+                            <span className="font-semibold text-sm">Camera</span>
+                          </button>
+                       </div>
+                       
+                       {hasSavedSession && (
+                          <button 
+                            onClick={loadSession}
+                            className="w-full mt-4 py-4 bg-gray-800 hover:bg-gray-700 rounded-2xl border border-gray-700 text-gray-300 font-semibold flex items-center justify-center gap-2 transition-all"
+                          >
+                            <IconRestore className="w-5 h-5 text-green-500" />
+                            Resume Previous Session
+                          </button>
+                       )}
+                     </div>
+                   </div>
                 </div>
               ) : (
-                <div className="space-y-4">
-                  {/* Canvas Container - ensure it's relative for floating toolbar if not dragged out */}
-                  <div className="relative w-full flex justify-center bg-gray-950 rounded-lg overflow-hidden border border-gray-800 touch-none group">
-                    <canvas 
-                      ref={canvasRef}
-                      onMouseDown={handleCanvasDrawStart}
-                      onMouseMove={handleCanvasDrawMove}
-                      onMouseUp={handleCanvasDrawEnd}
-                      onMouseLeave={handleCanvasDrawEnd}
-                      onTouchStart={handleCanvasDrawStart}
-                      onTouchMove={handleCanvasDrawMove}
-                      onTouchEnd={handleCanvasDrawEnd}
-                      className="cursor-crosshair max-w-full"
-                    />
+                <>
+                  {/* Canvas Viewport */}
+                  <div 
+                    ref={containerRef}
+                    className="flex-1 bg-[#121212] relative overflow-hidden flex items-center justify-center touch-none select-none w-full"
+                    style={{ cursor: brushType === 'pan' ? (isPanning ? 'grabbing' : 'grab') : 'crosshair' }}
+                  >
+                    <div 
+                      style={{ 
+                        transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`,
+                        transformOrigin: '0 0',
+                        position: 'absolute',
+                        left: '50%',
+                        top: '50%',
+                        marginLeft: canvasRef.current ? -(canvasRef.current.width * 0.5) : 0,
+                        marginTop: canvasRef.current ? -(canvasRef.current.height * 0.5) : 0,
+                        transition: isPanning ? 'none' : 'transform 0.1s ease-out'
+                      }}
+                    >
+                       <canvas 
+                        ref={canvasRef}
+                        onMouseDown={handlePointerDown}
+                        onMouseMove={handlePointerMove}
+                        onMouseUp={handlePointerUp}
+                        onMouseLeave={handlePointerUp}
+                        onTouchStart={handlePointerDown}
+                        onTouchMove={handlePointerMove}
+                        onTouchEnd={handlePointerUp}
+                        className="shadow-2xl border border-gray-800 bg-gray-900"
+                        style={{ maxWidth: 'unset' }} // Override max-w-full to allow zoom
+                      />
+                    </div>
                     
-                    {/* Floating Tools Toolbar - Draggable */}
+                    {/* Floating Zoom Controls */}
+                    <div className="absolute top-4 right-4 flex flex-col gap-2 z-20">
+                      <button onClick={handleZoomIn} className="p-2 bg-gray-800/80 backdrop-blur rounded-lg border border-white/10 shadow hover:bg-gray-700"><IconZoomIn /></button>
+                      <button onClick={handleResetZoom} className="p-2 bg-gray-800/80 backdrop-blur rounded-lg border border-white/10 shadow hover:bg-gray-700 text-xs font-bold">{Math.round(transform.scale * 100)}%</button>
+                      <button onClick={handleZoomOut} className="p-2 bg-gray-800/80 backdrop-blur rounded-lg border border-white/10 shadow hover:bg-gray-700"><IconZoomOut /></button>
+                    </div>
+
+                    {/* Floating Tools Toolbar */}
                     <div 
                         ref={toolbarRef}
                         onPointerDown={handleDragStart}
@@ -620,161 +711,178 @@ const App: React.FC = () => {
                         onPointerUp={handleDragEnd}
                         onPointerCancel={handleDragEnd}
                         style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }}
-                        className="absolute bottom-4 left-0 right-0 mx-auto w-max max-w-[95%] bg-black/80 backdrop-blur-xl p-2 rounded-2xl border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing touch-none z-10"
+                        className={`absolute left-4 top-4 w-auto bg-black/90 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing touch-none z-20 transition-all ${isToolbarMinimized ? 'p-2' : 'p-3'}`}
                     >
-                        {/* Drag Handle */}
-                        <div className="flex justify-center items-center py-1 opacity-50 hover:opacity-100">
-                           <IconMove className="w-8 h-4 text-gray-400" />
-                        </div>
-
-                        {/* Brushes & History */}
-                        <div 
-                          className="flex items-center gap-2 justify-center flex-wrap"
-                          onPointerDown={(e) => e.stopPropagation()} // Allow clicking buttons without dragging
-                        >
-                          <BrushBtn type="pen" icon={IconBrush} active={brushType === 'pen'} onClick={() => setBrushType('pen')} />
-                          <BrushBtn type="spray" icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} />
-                          <BrushBtn type="marker" icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} />
-                          <BrushBtn type="eraser" icon={IconEraser} active={brushType === 'eraser'} onClick={() => setBrushType('eraser')} />
-                          
-                          <div className="w-px h-6 bg-white/20 mx-1"></div>
-                          
-                          <button onClick={handleUndo} disabled={historyStep <= 0} className="p-2 text-gray-400 hover:text-white disabled:opacity-30">
-                            <IconUndo className="w-5 h-5" />
-                          </button>
-                          <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="p-2 text-gray-400 hover:text-white disabled:opacity-30">
-                            <IconRedo className="w-5 h-5" />
-                          </button>
-                           <button onClick={clearCanvas} className="p-2 text-red-400 hover:bg-red-500/20 rounded-lg" title="Clear All">
-                            <IconTrash className="w-5 h-5" />
-                          </button>
-                        </div>
-
-                        {/* Settings: Size & Color */}
-                        <div 
-                          className="flex items-center gap-4 px-2 pt-1 border-t border-white/10"
-                          onPointerDown={(e) => e.stopPropagation()}
-                        >
-                           <div className="flex-1 min-w-[100px]">
-                              <input 
-                                type="range" 
-                                min="2" 
-                                max="50" 
-                                value={brushSize} 
-                                onChange={(e) => setBrushSize(parseInt(e.target.value))}
-                                className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                              />
+                        {/* Header with Minimize & Save */}
+                        <div className="flex justify-between items-center px-1 gap-2" onPointerDown={(e) => e.stopPropagation()}>
+                           <div className="p-1 cursor-grab active:cursor-grabbing" onPointerDown={handleDragStart}>
+                              <IconMove className="w-4 h-4 text-gray-500" />
                            </div>
-                           <div className="flex gap-1 overflow-x-auto no-scrollbar py-1 max-w-[150px]">
-                              {['#FFFFFF', '#000000', '#FF0055', '#00E5FF', '#FFD700', '#32CD32'].map(color => (
-                                <button 
-                                  key={color}
-                                  onClick={() => setBrushColor(color)}
-                                  className={`w-5 h-5 flex-shrink-0 rounded-full border border-white/20 hover:scale-110 transition-transform ${brushColor === color ? 'ring-2 ring-offset-1 ring-offset-black ring-white' : ''}`}
-                                  style={{background: color}}
+                           <div className="flex items-center gap-1">
+                             <button onClick={saveSession} className="text-gray-400 hover:text-green-400" title="Save Session">
+                                <IconSave className="w-4 h-4" />
+                             </button>
+                             <button onClick={() => setIsToolbarMinimized(!isToolbarMinimized)} className="text-gray-400 hover:text-white">
+                                {isToolbarMinimized ? <IconMaximize className="w-4 h-4"/> : <IconMinimize className="w-4 h-4" />}
+                             </button>
+                           </div>
+                        </div>
+
+                        {!isToolbarMinimized && (
+                          <div onPointerDown={(e) => e.stopPropagation()} className="space-y-4 animate-fade-in">
+                            {/* Brushes Grid */}
+                            <div className="grid grid-cols-3 gap-2">
+                              <BrushBtn type="pan" icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} />
+                              <BrushBtn type="pen" icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} />
+                              <BrushBtn type="spray" icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} />
+                              <BrushBtn type="marker" icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} />
+                              <BrushBtn type="eraser" icon={IconEraser} active={brushType === 'eraser'} onClick={() => setBrushType('eraser')} />
+                              <button onClick={clearCanvas} className="p-2.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 flex items-center justify-center">
+                                <IconTrash className="w-5 h-5" />
+                              </button>
+                            </div>
+                            
+                            <div className="h-px bg-white/10"></div>
+                            
+                            <div className="flex justify-between gap-1">
+                               <button onClick={handleUndo} disabled={historyStep <= 0} className="p-2 text-gray-400 hover:text-white disabled:opacity-30"><IconUndo /></button>
+                               <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="p-2 text-gray-400 hover:text-white disabled:opacity-30"><IconRedo /></button>
+                            </div>
+
+                            {/* Size Slider */}
+                             <div>
+                                <input 
+                                  type="range" min="2" max="100" value={brushSize} 
+                                  onChange={(e) => setBrushSize(parseInt(e.target.value))}
+                                  className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500"
                                 />
-                              ))}
+                             </div>
+                             
+                             {/* Colors */}
+                             <div className="grid grid-cols-4 gap-2">
+                                {['#FFFFFF', '#000000', '#FF0055', '#00E5FF', '#FFD700', '#32CD32', '#FF4500', '#9370DB'].map(color => (
+                                  <button 
+                                    key={color}
+                                    onClick={() => setBrushColor(color)}
+                                    className={`w-6 h-6 rounded-full border border-white/20 hover:scale-110 transition-transform ${brushColor === color ? 'ring-2 ring-offset-2 ring-offset-black ring-white' : ''}`}
+                                    style={{background: color}}
+                                  />
+                                ))}
+                             </div>
+                          </div>
+                        )}
+                        {/* Minimized View shows active brush */}
+                        {isToolbarMinimized && (
+                           <div className="flex justify-center py-2" onPointerDown={(e) => e.stopPropagation()}>
+                              <div className="w-6 h-6 rounded-full" style={{background: brushColor, border: '1px solid white'}}></div>
                            </div>
-                        </div>
+                        )}
                     </div>
                   </div>
 
-                  {/* Input */}
-                  <div className="flex flex-col sm:flex-row gap-2">
-                    <input
-                      type="text"
-                      value={editPrompt}
-                      onChange={(e) => setEditPrompt(e.target.value)}
-                      placeholder="Describe the magic you want to add..."
-                      className="flex-1 bg-gray-950 border border-gray-700 rounded-xl p-4 focus:ring-2 focus:ring-indigo-500 outline-none text-base"
-                    />
-                    <button
-                      onClick={handleMagicEdit}
-                      disabled={isEditing || !editPrompt}
-                      className="w-full sm:w-auto px-6 py-4 sm:py-0 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold disabled:opacity-50 transition-colors flex items-center justify-center"
-                    >
-                      {isEditing ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"/> : "Transform"}
-                    </button>
+                  {/* Bottom Bar for Prompt & Actions */}
+                  <div className="p-4 bg-black/90 border-t border-gray-800 z-30 pb-20 md:pb-4 shrink-0">
+                    <div className="max-w-3xl mx-auto flex gap-2">
+                       <button onClick={() => {setEditPreview(null); setEditFile(null);}} className="p-3 bg-gray-800 rounded-xl text-gray-400">
+                         <IconX />
+                       </button>
+                       <input
+                        type="text"
+                        value={editPrompt}
+                        onChange={(e) => setEditPrompt(e.target.value)}
+                        placeholder="What should change?"
+                        className="flex-1 bg-gray-950 border border-gray-700 rounded-xl px-4 focus:ring-2 focus:ring-indigo-500 outline-none"
+                      />
+                      <button
+                        onClick={handleMagicEdit}
+                        disabled={isEditing || !editPrompt}
+                        className="px-6 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold disabled:opacity-50 transition-colors flex items-center gap-2"
+                      >
+                         {isEditing ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"/> : <IconWand />}
+                      </button>
+                    </div>
                   </div>
-                  
-                  <button onClick={() => {setEditPreview(null); setEditFile(null);}} className="text-sm text-gray-500 hover:text-white underline">
-                    Choose a different photo
-                  </button>
-                </div>
-              )}
-            </div>
 
-             {/* Results */}
-             {editedImages.length > 0 && (
-                <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800">
-                  <h3 className="text-lg font-bold mb-4 text-white">Magic Result</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {editedImages.map((src, idx) => (
-                      <div key={idx} className="relative rounded-xl overflow-hidden">
-                        <img src={src} alt="Edited" className="w-full" />
-                        <div className="absolute inset-0 bg-black/60 opacity-0 hover:opacity-100 transition-opacity flex items-center justify-center gap-4">
-                           <button 
-                            onClick={() => downloadImage(src, `magic-edit-${Date.now()}.png`)}
-                            className="flex items-center gap-2 px-4 py-2 bg-white text-black rounded-full font-bold hover:scale-105 transition-transform"
-                          >
-                            <IconDownload className="w-4 h-4" /> Save Image
-                          </button>
+                  {/* Results Overlay */}
+                   {editedImages.length > 0 && (
+                      <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
+                        <div className="bg-gray-900 rounded-3xl p-6 max-w-2xl w-full border border-gray-700 shadow-2xl relative">
+                           <button onClick={() => setEditedImages([])} className="absolute top-4 right-4 p-2 bg-gray-800 rounded-full hover:bg-gray-700">
+                              <IconX />
+                           </button>
+                           <h2 className="text-xl font-bold mb-4">Magic Result</h2>
+                           <div className="grid grid-cols-1 gap-4">
+                              {editedImages.map((src, idx) => (
+                                <div key={idx} className="relative rounded-2xl overflow-hidden">
+                                  <img src={src} className="w-full max-h-[60vh] object-contain bg-black" alt="Result"/>
+                                  <button 
+                                    onClick={() => downloadImage(src, `magic-edit-result-${Date.now()}.png`)}
+                                    className="absolute bottom-4 right-4 px-6 py-3 bg-white text-black rounded-full font-bold shadow-lg flex items-center gap-2 hover:scale-105 transition"
+                                  >
+                                    <IconDownload /> Save
+                                  </button>
+                                </div>
+                              ))}
+                           </div>
                         </div>
                       </div>
-                    ))}
-                  </div>
-                </div>
-             )}
+                   )}
+                </>
+              )}
           </div>
         )}
 
         {/* MODE: GALLERY */}
         {mode === AppMode.GALLERY && (
-          <div className="space-y-6 animate-fade-in pb-20">
-            <h2 className="text-2xl font-bold text-white mb-6">Your Gallery</h2>
-            {galleryItems.length === 0 ? (
-              <div className="text-center py-20 text-gray-500">
-                <IconHistory className="w-16 h-16 mx-auto mb-4 opacity-20" />
-                <p>No magic created yet. Start creating!</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                {galleryItems.map((item) => (
-                  <div key={item.id} className="group relative bg-gray-900 rounded-xl overflow-hidden border border-gray-800">
-                    <img src={item.src} alt={item.prompt} className="w-full h-48 object-cover" />
-                    <div className="p-4">
-                      <p className="text-xs text-indigo-400 font-bold uppercase tracking-wider mb-1">{item.type}</p>
-                      <p className="text-sm text-gray-300 line-clamp-2" title={item.prompt}>{item.prompt}</p>
+          <div className="flex-1 overflow-y-auto p-4 animate-fade-in pb-32">
+            <div className="max-w-6xl mx-auto">
+              <h2 className="text-2xl font-bold text-white mb-6">Gallery</h2>
+              {galleryItems.length === 0 ? (
+                <div className="text-center py-20 text-gray-500">
+                  <IconHistory className="w-16 h-16 mx-auto mb-4 opacity-20" />
+                  <p>No magic created yet. Start creating!</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                  {galleryItems.map((item) => (
+                    <div key={item.id} className="group relative bg-gray-900 rounded-xl overflow-hidden border border-gray-800 shadow-lg">
+                      <img src={item.src} alt={item.prompt} className="w-full h-56 object-cover" />
+                      <div className="p-4">
+                        <div className="flex justify-between items-start mb-2">
+                           <span className={`text-[10px] font-bold px-2 py-1 rounded-full ${item.type === 'generated' ? 'bg-indigo-500/20 text-indigo-300' : 'bg-purple-500/20 text-purple-300'}`}>
+                             {item.type.toUpperCase()}
+                           </span>
+                           <span className="text-xs text-gray-500">{new Date(item.timestamp).toLocaleDateString()}</span>
+                        </div>
+                        <p className="text-sm text-gray-300 line-clamp-2" title={item.prompt}>{item.prompt}</p>
+                      </div>
+                      
+                      <div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
+                         <button 
+                          onClick={() => downloadImage(item.src, `magic-gallery-${item.id}.png`)}
+                          className="p-3 bg-white/10 hover:bg-white/20 rounded-full text-white backdrop-blur-md"
+                         >
+                           <IconDownload className="w-6 h-6" />
+                         </button>
+                         <button 
+                          onClick={() => handleDeleteHistory(item.id)}
+                          className="p-3 bg-red-500/20 hover:bg-red-500/40 rounded-full text-red-400 backdrop-blur-md"
+                         >
+                           <IconTrash className="w-6 h-6" />
+                         </button>
+                      </div>
                     </div>
-                    
-                    {/* Hover Actions */}
-                    <div className="absolute inset-0 bg-black/80 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-3">
-                       <button 
-                        onClick={() => downloadImage(item.src, `magic-gallery-${item.id}.png`)}
-                        className="p-3 bg-white/10 hover:bg-white/20 rounded-full text-white backdrop-blur-md"
-                        title="Download"
-                       >
-                         <IconDownload className="w-6 h-6" />
-                       </button>
-                       <button 
-                        onClick={() => handleDeleteHistory(item.id)}
-                        className="p-3 bg-red-500/20 hover:bg-red-500/40 rounded-full text-red-400 backdrop-blur-md"
-                        title="Delete"
-                       >
-                         <IconTrash className="w-6 h-6" />
-                       </button>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </main>
 
       {/* Mobile Bottom Navigation */}
-      <div className="fixed bottom-0 left-0 right-0 bg-gray-950 border-t border-gray-800 md:hidden z-40 pb-safe">
-        <div className="flex justify-around p-4">
+      <div className="fixed bottom-0 left-0 right-0 bg-gray-950/90 backdrop-blur-lg border-t border-gray-800 md:hidden z-40 pb-safe">
+        <div className="flex justify-around p-3">
           <NavBtn active={mode === AppMode.GENERATE} onClick={() => setMode(AppMode.GENERATE)} icon={<IconWand />} label="Create" />
           <NavBtn active={mode === AppMode.EDIT} onClick={() => setMode(AppMode.EDIT)} icon={<IconPen />} label="Editor" />
           <NavBtn active={mode === AppMode.GALLERY} onClick={() => setMode(AppMode.GALLERY)} icon={<IconHistory />} label="Gallery" />
@@ -782,7 +890,7 @@ const App: React.FC = () => {
       </div>
 
       {/* Desktop Navigation */}
-      <div className="hidden md:flex fixed left-8 top-1/2 -translate-y-1/2 flex-col gap-4 bg-gray-900/90 backdrop-blur border border-gray-700 p-2 rounded-2xl shadow-2xl">
+      <div className="hidden md:flex fixed left-6 top-1/2 -translate-y-1/2 flex-col gap-4 bg-gray-900/90 backdrop-blur border border-gray-700 p-2 rounded-2xl shadow-2xl z-50">
           <NavBtn active={mode === AppMode.GENERATE} onClick={() => setMode(AppMode.GENERATE)} icon={<IconWand />} label="Create" vertical />
           <NavBtn active={mode === AppMode.EDIT} onClick={() => setMode(AppMode.EDIT)} icon={<IconPen />} label="Editor" vertical />
           <NavBtn active={mode === AppMode.GALLERY} onClick={() => setMode(AppMode.GALLERY)} icon={<IconHistory />} label="Gallery" vertical />
@@ -794,7 +902,7 @@ const App: React.FC = () => {
 const NavBtn = ({ active, onClick, icon, label, vertical = false }: any) => (
   <button 
     onClick={onClick}
-    className={`flex ${vertical ? 'flex-col gap-2 p-4' : 'flex-col gap-1'} items-center justify-center rounded-xl transition-all ${active ? 'text-indigo-400' : 'text-gray-500 hover:text-gray-300'}`}
+    className={`flex ${vertical ? 'flex-col gap-2 p-3 w-16' : 'flex-col gap-1 w-full'} items-center justify-center rounded-xl transition-all ${active ? 'text-indigo-400 bg-white/5' : 'text-gray-500 hover:text-gray-300 hover:bg-white/5'}`}
   >
     <div className={`${active ? 'scale-110' : ''} transition-transform`}>{icon}</div>
     <span className="text-[10px] uppercase font-bold tracking-wider">{label}</span>
