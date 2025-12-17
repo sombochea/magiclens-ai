@@ -822,11 +822,11 @@ const App: React.FC = () => {
           <div className="relative flex-1 bg-black overflow-hidden">
              <video ref={videoRef} className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`} autoPlay playsInline muted />
              <div className="absolute top-6 left-6 right-6 flex justify-between">
-               <button onClick={() => setShowCamera(false)} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white"><IconX className="w-6 h-6" /></button>
-               <button onClick={toggleCameraFacing} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white"><IconFlipCamera className="w-6 h-6" /></button>
+               <button onClick={() => setShowCamera(false)} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white hover:bg-white/20 transition-all"><IconX className="w-6 h-6" /></button>
+               <button onClick={toggleCameraFacing} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white hover:bg-white/20 transition-all"><IconFlipCamera className="w-6 h-6" /></button>
              </div>
              <div className="absolute bottom-12 left-0 right-0 flex justify-center">
-                <button onClick={capturePhoto} className="w-24 h-24 rounded-full border-4 border-white flex items-center justify-center active:scale-90 transition-all"><div className="w-20 h-20 bg-white rounded-full"></div></button>
+                <button onClick={capturePhoto} className="w-24 h-24 rounded-full border-4 border-white flex items-center justify-center active:scale-90 transition-all shadow-2xl"><div className="w-20 h-20 bg-white rounded-full"></div></button>
              </div>
           </div>
         </div>
@@ -867,7 +867,7 @@ const App: React.FC = () => {
                     <div className="space-y-4">
                       <div className="flex justify-between items-center px-1">
                         <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Your Prompt</label>
-                        <button onClick={() => setGenPrompt("")} className="text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300">Clear</button>
+                        <button onClick={() => setGenPrompt("")} className="text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300 transition-colors">Clear</button>
                       </div>
                       <textarea value={genPrompt} onChange={e => setGenPrompt(e.target.value)} placeholder="A celestial fox dancing in the aurora borealis..." className="w-full bg-gray-950/50 border border-white/5 rounded-3xl p-6 h-48 focus:ring-2 focus:ring-indigo-500/50 transition-all resize-none text-lg text-white font-medium outline-none"/>
                     </div>
@@ -1005,7 +1005,7 @@ const App: React.FC = () => {
                         {!showLayerPanel && <Tooltip text="Open Layers" position="left"><button onClick={() => setShowLayerPanel(true)} className="p-4 bg-black/80 backdrop-blur border border-white/10 rounded-2xl text-white shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center"><IconLayers className="w-6 h-6"/></button></Tooltip>}
                         {showLayerPanel && (
                            <div className="bg-[#0f0f11]/95 backdrop-blur-2xl border border-white/10 rounded-[32px] shadow-2xl flex flex-col overflow-hidden max-h-[70vh]">
-                                <div className="p-5 border-b border-white/10 flex justify-between items-center"><h3 className="text-[10px] font-black uppercase tracking-widest text-gray-400">Layers</h3><button onClick={() => setShowLayerPanel(false)} className="text-gray-500 hover:text-white flex items-center justify-center"><IconX className="w-4 h-4"/></button></div>
+                                <div className="p-5 border-b border-white/10 flex justify-between items-center bg-white/5"><h3 className="text-[10px] font-black uppercase tracking-widest text-gray-400">Layers</h3><button onClick={() => setShowLayerPanel(false)} className="text-gray-500 hover:text-white flex items-center justify-center"><IconX className="w-4 h-4"/></button></div>
                                 <div className="overflow-y-auto flex-col-reverse flex p-4 gap-3">
                                     {layers.map((l, i) => (
                                         <div 
@@ -1114,9 +1114,18 @@ const App: React.FC = () => {
                                         {!collapsedSections.symmetry && (
                                             <div className="p-3 bg-black/20 space-y-4">
                                                 <div className="grid grid-cols-2 gap-1 bg-gray-900/50 p-1 rounded-xl">
-                                                    {['none', 'vertical', 'horizontal', 'radial'].map(s => (
-                                                        <button key={s} onClick={() => setSymmetry(s as any)} className={`py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === s ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>{s}</button>
-                                                    ))}
+                                                    <Tooltip text="No mirroring" position="top">
+                                                      <button onClick={() => setSymmetry('none')} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === 'none' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>none</button>
+                                                    </Tooltip>
+                                                    <Tooltip text="Mirror drawing along the vertical center axis" position="top">
+                                                      <button onClick={() => setSymmetry('vertical')} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === 'vertical' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>vertical</button>
+                                                    </Tooltip>
+                                                    <Tooltip text="Mirror drawing along the horizontal center axis" position="top">
+                                                      <button onClick={() => setSymmetry('horizontal')} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === 'horizontal' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>horizontal</button>
+                                                    </Tooltip>
+                                                    <Tooltip text="Repeat drawing in multiple slices around the center point" position="top">
+                                                      <button onClick={() => setSymmetry('radial')} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === 'radial' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>radial</button>
+                                                    </Tooltip>
                                                 </div>
                                                 {symmetry === 'radial' && (
                                                     <div className="space-y-1">
@@ -1139,7 +1148,7 @@ const App: React.FC = () => {
                             )}
                             
                             <Tooltip text="Automatically segment and remove background" position="top">
-                              <button onClick={handleRemoveBackground} className="w-full p-4 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 rounded-[22px] flex items-center justify-center gap-2 border border-indigo-500/20 transition-all active:scale-95 group font-black text-[10px] uppercase tracking-widest"><IconScissors className="w-4 h-4 group-hover:rotate-12 transition-transform" /> Auto Remove BG</button>
+                              <button onClick={handleRemoveBackground} className="w-full p-4 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 rounded-[22px] flex items-center justify-center gap-2 border border-indigo-500/20 transition-all active:scale-95 group font-black text-[10px] uppercase tracking-widest flex items-center justify-center"><IconScissors className="w-4 h-4 group-hover:rotate-12 transition-transform" /> Auto Remove BG</button>
                             </Tooltip>
                             
                             <div className="flex gap-3">
@@ -1160,11 +1169,11 @@ const App: React.FC = () => {
                            <div className="relative group">
                               <div className="absolute -inset-1 bg-indigo-500/10 rounded-[32px] blur-xl opacity-0 group-hover:opacity-100 transition-all duration-700"></div>
                               <div className="relative flex items-center gap-4 bg-gray-950/90 backdrop-blur-2xl border border-white/10 rounded-[30px] p-2.5 pl-4 shadow-[0_20px_50px_rgba(0,0,0,0.6)]">
-                                 <Tooltip text="Close Session" position="top"><button onClick={() => {setLayers([]); setHistory([]); setHistoryStep(-1);}} className="w-10 h-10 flex items-center justify-center rounded-2xl text-gray-500 hover:text-red-400 transition-colors"><IconX className="w-5 h-5"/></button></Tooltip>
+                                 <Tooltip text="Close Session" position="top"><button onClick={() => {setLayers([]); setHistory([]); setHistoryStep(-1);}} className="w-10 h-10 flex items-center justify-center rounded-2xl text-gray-500 hover:text-red-400 transition-colors flex items-center justify-center"><IconX className="w-5 h-5"/></button></Tooltip>
                                  <div className="h-6 w-px bg-white/10"></div>
                                  <input type="text" value={editPrompt} onChange={e => setEditPrompt(e.target.value)} placeholder="Describe magic change..." className="flex-1 bg-transparent border-none outline-none text-white font-bold text-sm md:text-base"/>
                                  <Tooltip text="Run AI In-painting" position="top">
-                                   <button onClick={handleMagicEdit} disabled={isEditing || !editPrompt} className={`h-11 px-8 rounded-[22px] font-black uppercase tracking-widest text-[10px] text-white shadow-xl transition-all flex items-center gap-3 ${isEditing || !editPrompt ? 'bg-gray-800 text-gray-600' : 'bg-indigo-600 hover:bg-indigo-500 active:scale-95'}`}>{isEditing ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <><span className="hidden sm:inline">Apply Magic</span><IconWand className="w-4.5 h-4.5"/></>}</button>
+                                   <button onClick={handleMagicEdit} disabled={isEditing || !editPrompt} className={`h-11 px-8 rounded-[22px] font-black uppercase tracking-widest text-[10px] text-white shadow-xl transition-all flex items-center gap-3 ${isEditing || !editPrompt ? 'bg-gray-800 text-gray-600' : 'bg-indigo-600 hover:bg-indigo-500 active:scale-95'} flex items-center justify-center`}>{isEditing ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <><span className="hidden sm:inline">Apply Magic</span><IconWand className="w-4.5 h-4.5"/></>}</button>
                                  </Tooltip>
                               </div>
                            </div>
@@ -1173,9 +1182,9 @@ const App: React.FC = () => {
                     ) : (
                         <div className="absolute bottom-24 md:bottom-12 left-0 right-0 z-40 px-6 flex justify-center pointer-events-none">
                             <div className="pointer-events-auto flex gap-4 bg-gray-950/90 backdrop-blur-xl border border-white/10 rounded-full p-2 pr-6 shadow-2xl">
-                                <button onClick={toggleCrop} className="w-12 h-12 flex items-center justify-center rounded-full text-gray-500 hover:text-red-400 hover:bg-white/5 transition-all"><IconX className="w-6 h-6"/></button>
+                                <button onClick={toggleCrop} className="w-12 h-12 flex items-center justify-center rounded-full text-gray-500 hover:text-red-400 hover:bg-white/5 transition-all flex items-center justify-center"><IconX className="w-6 h-6"/></button>
                                 <div className="h-12 w-px bg-white/10"></div>
-                                <button onClick={applyCrop} className="flex items-center gap-3 h-12 px-8 bg-indigo-600 text-white rounded-full font-black uppercase text-xs tracking-widest hover:bg-indigo-500 transition-all shadow-lg active:scale-95"><IconCheck className="w-5 h-5"/> Apply Crop</button>
+                                <button onClick={applyCrop} className="flex items-center gap-3 h-12 px-8 bg-indigo-600 text-white rounded-full font-black uppercase text-xs tracking-widest hover:bg-indigo-500 transition-all shadow-lg active:scale-95 flex items-center justify-center"><IconCheck className="w-5 h-5"/> Apply Crop</button>
                             </div>
                         </div>
                     )}
@@ -1188,7 +1197,7 @@ const App: React.FC = () => {
                            <div className="grid grid-cols-1 gap-6">
                               {editedImages.map((src, i) => (
                                 <div key={i} className="relative rounded-[32px] overflow-hidden group bg-black shadow-2xl border border-white/5">
-                                  <img src={src} className="w-full max-h-[50vh] object-contain" alt="AI Edited Result"/><div className="absolute bottom-6 left-6 right-6 flex gap-4 opacity-0 group-hover:opacity-100 transition-all translate-y-2 group-hover:translate-y-0"><button onClick={() => handleApplyResult(src)} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-2xl flex items-center justify-center gap-3 hover:bg-indigo-500 transition-all active:scale-95"><IconCheck className="w-5 h-5"/> Add as Layer</button><button onClick={() => downloadImage(src, 'magic.png')} className="py-4 px-6 bg-white/10 backdrop-blur-md text-white rounded-2xl border border-white/20 hover:bg-white/20 transition-all flex items-center justify-center"><IconDownload className="w-5 h-5"/></button></div>
+                                  <img src={src} className="w-full max-h-[50vh] object-contain" alt="AI Edited Result"/><div className="absolute bottom-6 left-6 right-6 flex gap-4 opacity-0 group-hover:opacity-100 transition-all translate-y-2 group-hover:translate-y-0"><button onClick={() => handleApplyResult(src)} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-2xl flex items-center justify-center gap-3 hover:bg-indigo-500 transition-all active:scale-95 flex items-center justify-center"><IconCheck className="w-5 h-5"/> Add as Layer</button><button onClick={() => downloadImage(src, 'magic.png')} className="py-4 px-6 bg-white/10 backdrop-blur-md text-white rounded-2xl border border-white/20 hover:bg-white/20 transition-all flex items-center justify-center"><IconDownload className="w-5 h-5"/></button></div>
                                 </div>
                               ))}
                            </div>
