@@ -12,26 +12,33 @@ const base64ToGenerativePart = (base64String: string, mimeType: string = 'image/
 };
 
 /**
- * Generate Image using gemini-3-pro-image-preview (Nano Banana Pro)
+ * Generate Image using specified model
  */
 export const generateImage = async (
   prompt: string,
   aspectRatio: AspectRatio,
-  imageSize: ImageResolution
+  imageSize: ImageResolution,
+  model: 'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview' = 'gemini-2.5-flash-image'
 ): Promise<string[]> => {
   const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
+    const config: any = {
+      imageConfig: {
+        aspectRatio: aspectRatio,
+      },
+    };
+
+    // imageSize is only supported for gemini-3 series
+    if (model === 'gemini-3-pro-image-preview') {
+      config.imageConfig.imageSize = imageSize;
+    }
+
     const response: GenerateContentResponse = await ai.models.generateContent({
-      model: 'gemini-3-pro-image-preview',
+      model: model,
       contents: {
         parts: [{ text: prompt }],
       },
-      config: {
-        imageConfig: {
-          aspectRatio: aspectRatio,
-          imageSize: imageSize,
-        },
-      },
+      config: config,
     });
 
     const images: string[] = [];
@@ -60,7 +67,6 @@ export const editImage = async (
   try {
     const imagePart = base64ToGenerativePart(imageBase64);
     
-    // Explicitly using gemini-2.5-flash-image (Nano Banana)
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: 'gemini-2.5-flash-image',
       contents: {

@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { AppMode, AspectRatio, ImageResolution, HistoryItem, Layer, LayerSnapshot, HistoryState } from './types';
 import { generateImage, editImage } from './services/geminiService';
@@ -12,6 +13,15 @@ import {
   IconSliders, IconCrop, IconRotateCw, IconRotateCcw, IconScaling,
   IconFlipCamera, IconChevronDown, IconChevronRight
 } from './components/Icons';
+
+const SUGGESTED_PROMPTS = [
+  "A futuristic cyberpunk cityscape with neon lights and flying cars",
+  "A mystical forest with glowing mushrooms and ethereal spirits",
+  "A majestic dragon made of obsidian scales breathing blue fire",
+  "A cozy cottage in a snowy valley at sunset, pixel art style",
+  "An abstract portrait with vibrant swirling watercolors",
+  "A group of astronauts playing poker on the moon"
+];
 
 // Magical Processing Overlay
 const ProcessingOverlay = ({ text }: { text: string }) => (
@@ -34,7 +44,6 @@ const ProcessingOverlay = ({ text }: { text: string }) => (
   </div>
 );
 
-// Helper function to create a new layer
 const createLayer = (name: string, width: number, height: number): Layer => {
   const canvas = document.createElement('canvas');
   canvas.width = width;
@@ -70,7 +79,6 @@ const BLEND_MODES: { value: GlobalCompositeOperation; label: string }[] = [
 
 const LayerThumbnail = ({ layer }: { layer: Layer }) => {
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    
     useEffect(() => {
         const canvas = canvasRef.current;
         const ctx = canvas?.getContext('2d');
@@ -88,19 +96,21 @@ const LayerThumbnail = ({ layer }: { layer: Layer }) => {
             ctx.drawImage(layer.canvas, 0, 0, 40, 40);
         }
     }, [layer.canvas, layer.visible]); 
-
     return <canvas ref={canvasRef} width={40} height={40} className="w-8 h-8 rounded border border-white/10 bg-gray-800 object-cover flex-shrink-0" />;
 };
 
 const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>(AppMode.GENERATE);
   
-  // -- State --
+  // -- Generation State --
   const [genPrompt, setGenPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(AspectRatio.SQUARE);
   const [imageSize, setImageSize] = useState<ImageResolution>(ImageResolution.RES_1K);
+  const [genModel, setGenModel] = useState<'gemini-2.5-flash-image' | 'gemini-3-pro-image-preview'>('gemini-2.5-flash-image');
   const [generatedImages, setGeneratedImages] = useState<string[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
+
+  // -- Editor State --
   const [editPrompt, setEditPrompt] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [editedImages, setEditedImages] = useState<string[]>([]);
@@ -114,8 +124,6 @@ const App: React.FC = () => {
   const [historyStep, setHistoryStep] = useState<number>(-1);
   const [showCamera, setShowCamera] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
-  
-  // Brush State
   const [isDrawing, setIsDrawing] = useState(false);
   const [brushColor, setBrushColor] = useState('#FF0055');
   const [brushSize, setBrushSize] = useState(20);
@@ -126,11 +134,8 @@ const App: React.FC = () => {
   const [brushFalloff, setBrushFalloff] = useState(0); 
   const [showBrushSettings, setShowBrushSettings] = useState(false);
   const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({ shape: true, advanced: true, colors: false, symmetry: true });
-  
-  // Symmetry State
   const [symmetry, setSymmetry] = useState<'none' | 'vertical' | 'horizontal' | 'radial'>('none');
   const [radialCount, setRadialCount] = useState(4);
-
   const [isCropping, setIsCropping] = useState(false);
   const [cropRect, setCropRect] = useState<{x:number, y:number, w:number, h:number} | null>(null);
   const [showResizeDialog, setShowResizeDialog] = useState(false);
@@ -218,13 +223,10 @@ const App: React.FC = () => {
     if (!mainCanvas) return;
     const ctx = mainCanvas.getContext('2d');
     if (!ctx) return;
-    
-    // Crucial: ensure main canvas matches canvasSize before drawing
     if (mainCanvas.width !== canvasSize.width || mainCanvas.height !== canvasSize.height) {
       mainCanvas.width = canvasSize.width;
       mainCanvas.height = canvasSize.height;
     }
-
     ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
     layers.forEach(layer => {
       if (layer.visible) {
@@ -250,23 +252,150 @@ const App: React.FC = () => {
   useEffect(() => { needsCompositeRef.current = true; }, [layers, canvasSize, previewBlendMode, activeLayerId]);
   useEffect(() => { setShowBlendMenu(false); setPreviewBlendMode(null); }, [activeLayerId]);
 
+  // -- Missing Fixes: Camera, Zoom, and History management --
+
+  /**
+   * Toggle camera between user and environment modes
+   */
+  const toggleCameraFacing = () => {
+    const next = facingMode === 'user' ? 'environment' : 'user';
+    setFacingMode(next);
+    startCamera(next);
+  };
+
+  /**
+   * Capture a photo from the video stream
+   */
+  const capturePhoto = () => {
+    if (!videoRef.current) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = videoRef.current.videoWidth;
+    canvas.height = videoRef.current.videoHeight;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      if (facingMode === 'user') {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(videoRef.current, 0, 0);
+      initEditorWithImage(canvas.toDataURL());
+      setShowCamera(false);
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+    }
+  };
+
+  /**
+   * Handle canvas zooming and panning with wheel
+   */
+  const handleWheel = (e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        const delta = -e.deltaY;
+        const scaleChange = delta > 0 ? 1.1 : 0.9;
+        setTransform(t => ({ ...t, scale: Math.max(0.1, Math.min(5, t.scale * scaleChange)) }));
+    } else {
+        setTransform(t => ({ ...t, x: t.x - e.deltaX, y: t.y - e.deltaY }));
+    }
+  };
+
+  /**
+   * Zoom increment
+   */
+  const handleZoomIn = () => setTransform(t => ({ ...t, scale: Math.min(t.scale * 1.2, 5) }));
+
+  /**
+   * Zoom decrement
+   */
+  const handleZoomOut = () => setTransform(t => ({ ...t, scale: Math.max(t.scale / 1.2, 0.1) }));
+
+  /**
+   * Reset zoom and position
+   */
+  const handleResetZoom = () => setTransform({ x: 0, y: 0, scale: 1 });
+
+  /**
+   * Toggle layer visibility
+   */
+  const handleToggleVisibility = (id: string) => {
+    const next = layers.map(l => l.id === id ? { ...l, visible: !l.visible } : l);
+    setLayers(next);
+    saveHistory(next);
+  };
+
+  /**
+   * Delete a layer
+   */
+  const handleDeleteLayer = (id: string) => {
+    const next = layers.filter(l => l.id !== id);
+    setLayers(next);
+    if (activeLayerId === id) setActiveLayerId(next[next.length - 1]?.id || null);
+    saveHistory(next);
+  };
+
+  /**
+   * Add a new empty layer
+   */
+  const handleAddLayer = () => {
+    const l = createLayer(`Layer ${layers.length + 1}`, canvasSize.width, canvasSize.height);
+    const next = [...layers, l];
+    setLayers(next);
+    setActiveLayerId(l.id);
+    saveHistory(next);
+  };
+
+  /**
+   * Open the resize dialog and init values
+   */
+  const openResizeDialog = () => {
+    setResizeWidth(canvasSize.width);
+    setResizeHeight(canvasSize.height);
+    setShowResizeDialog(true);
+  };
+
+  /**
+   * Clear the active layer's canvas
+   */
+  const handleClearLayer = () => {
+    if (!activeLayerId) return;
+    const layer = layers.find(l => l.id === activeLayerId);
+    if (!layer) return;
+    const ctx = layer.canvas.getContext('2d');
+    if (ctx) {
+      ctx.clearRect(0, 0, layer.canvas.width, layer.canvas.height);
+      needsCompositeRef.current = true;
+      saveHistory();
+    }
+  };
+
+  /**
+   * Undo last action
+   */
+  const handleUndo = () => { if (historyStep > 0) restoreStep(historyStep - 1); };
+
+  /**
+   * Redo last undone action
+   */
+  const handleRedo = () => { if (historyStep < history.length - 1) restoreStep(historyStep + 1); };
+
   const handleGenerate = async () => {
     if (!genPrompt.trim()) return;
 
-    if (typeof window !== 'undefined' && (window as any).aistudio) {
-      try {
-        const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-        if (!hasKey) {
-          await (window as any).aistudio.openSelectKey();
+    if (genModel === 'gemini-3-pro-image-preview') {
+      if (typeof window !== 'undefined' && (window as any).aistudio) {
+        try {
+          const hasKey = await (window as any).aistudio.hasSelectedApiKey();
+          if (!hasKey) {
+            await (window as any).aistudio.openSelectKey();
+          }
+        } catch (e) {
+          console.warn("API key check error", e);
         }
-      } catch (e) {
-        console.warn("API key check error", e);
       }
     }
 
     setIsGenerating(true);
     try {
-      const results = await generateImage(genPrompt, aspectRatio, imageSize);
+      const results = await generateImage(genPrompt, aspectRatio, imageSize, genModel);
       setGeneratedImages(prev => [...results, ...prev]);
       await saveItem({ id: Date.now().toString(), type: 'generated', src: results[0], prompt: genPrompt, timestamp: Date.now() });
       loadGallery();
@@ -284,24 +413,18 @@ const App: React.FC = () => {
       const scale = Math.min(1, 2048 / Math.max(img.width, img.height));
       const w = Math.floor(img.width * scale);
       const h = Math.floor(img.height * scale);
-      
-      // Update state and immediately apply to canvas
       setCanvasSize({ width: w, height: h });
       if (canvasRef.current) { 
         canvasRef.current.width = w; 
         canvasRef.current.height = h; 
       }
-      
       const bg = createLayer('Background', w, h);
       bg.canvas.getContext('2d')?.drawImage(img, 0, 0, w, h);
-      
       setLayers([bg]);
       setActiveLayerId(bg.id);
       setHistory([]);
       setHistoryStep(-1);
       setTimeout(() => saveHistory([bg], w, h), 100);
-      
-      // Center image in viewport
       setTransform({ x: 0, y: 0, scale: 1 });
       needsCompositeRef.current = true;
     };
@@ -325,23 +448,16 @@ const App: React.FC = () => {
     const cx = canvasSize.width / 2;
     const cy = canvasSize.height / 2;
     const points = [{ x, y }];
-
-    if (symmetry === 'vertical') {
-      points.push({ x: 2 * cx - x, y });
-    } else if (symmetry === 'horizontal') {
-      points.push({ x, y: 2 * cy - y });
-    } else if (symmetry === 'radial') {
+    if (symmetry === 'vertical') { points.push({ x: 2 * cx - x, y }); }
+    else if (symmetry === 'horizontal') { points.push({ x, y: 2 * cy - y }); }
+    else if (symmetry === 'radial') {
       const angleStep = (2 * Math.PI) / radialCount;
-      const dx = x - cx;
-      const dy = y - cy;
+      const dx = x - cx, dy = y - cy;
       const radius = Math.sqrt(dx * dx + dy * dy);
       const startAngle = Math.atan2(dy, dx);
       for (let i = 1; i < radialCount; i++) {
         const angle = startAngle + angleStep * i;
-        points.push({
-          x: cx + Math.cos(angle) * radius,
-          y: cy + Math.sin(angle) * radius
-        });
+        points.push({ x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius });
       }
     }
     return points;
@@ -351,59 +467,39 @@ const App: React.FC = () => {
     if (isDraggingToolbar) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
-
     if (brushType === 'pan') {
       setIsPanning(true);
       const {clientX: x, clientY: y} = 'touches' in e ? e.touches[0] : e;
       panStartRef.current = { x: x - transform.x, y: y - transform.y };
       return;
     }
-
     if (!activeLayerId) return;
     const layer = layers.find(l => l.id === activeLayerId);
     if (!layer || !layer.visible) return;
-
     setIsDrawing(true);
     strokeDistanceRef.current = 0; 
     const ctx = layer.canvas.getContext('2d');
     if (!ctx) return;
-    
     const rect = canvas.getBoundingClientRect();
     const {clientX: cx, clientY: cy} = 'touches' in e ? e.touches[0] : e;
     let x = (cx - rect.left) * (canvas.width / rect.width);
     let y = (cy - rect.top) * (canvas.height / rect.height);
-    
-    if (brushJitter > 0) { 
-        x += (Math.random() - 0.5) * brushJitter; 
-        y += (Math.random() - 0.5) * brushJitter; 
-    }
-
+    if (brushJitter > 0) { x += (Math.random() - 0.5) * brushJitter; y += (Math.random() - 0.5) * brushJitter; }
     const points = getSymmetricPoints(x, y);
-
     ctx.lineWidth = brushSize;
     ctx.lineCap = brushShape === 'square' ? 'square' : 'round';
     ctx.lineJoin = brushShape === 'square' ? 'bevel' : 'round';
     ctx.strokeStyle = brushColor;
     ctx.fillStyle = brushColor;
-
     let alpha = brushType === 'marker' ? 0.5 : 1.0;
     alpha *= (brushFlow / 100);
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = brushType === 'eraser' ? 'destination-out' : 'source-over';
-
     points.forEach(p => {
-        if (brushType === 'spray') {
-          sprayPaint(ctx, p.x, p.y, brushColor, brushSize, brushFlow);
-        } else if (brushShape === 'textured') {
-          drawTexturedPoint(ctx, p.x, p.y, alpha);
-        } else {
-          ctx.beginPath(); 
-          ctx.moveTo(p.x, p.y); 
-          ctx.lineTo(p.x, p.y); 
-          ctx.stroke();
-        }
+        if (brushType === 'spray') { sprayPaint(ctx, p.x, p.y, brushColor, brushSize, brushFlow); }
+        else if (brushShape === 'textured') { drawTexturedPoint(ctx, p.x, p.y, alpha); }
+        else { ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y); ctx.stroke(); }
     });
-
     lastDrawPointRef.current = { x, y };
     needsCompositeRef.current = true;
   };
@@ -440,58 +536,36 @@ const App: React.FC = () => {
     if (!layer) return;
     const ctx = layer.canvas.getContext('2d');
     if (!ctx) return;
-
     const rect = canvas.getBoundingClientRect();
     const {clientX: cx, clientY: cy} = 'touches' in e ? e.touches[0] : e;
     let x = (cx - rect.left) * (canvas.width / rect.width);
     let y = (cy - rect.top) * (canvas.height / rect.height);
-
-    if (brushJitter > 0) { 
-        x += (Math.random() - 0.5) * brushJitter; 
-        y += (Math.random() - 0.5) * brushJitter; 
-    }
-    
+    if (brushJitter > 0) { x += (Math.random() - 0.5) * brushJitter; y += (Math.random() - 0.5) * brushJitter; }
     const last = lastDrawPointRef.current;
     if (last) {
-        const dx = x - last.x, dy = y - last.y;
-        strokeDistanceRef.current += Math.sqrt(dx*dx + dy*dy);
-        
+        strokeDistanceRef.current += Math.sqrt((x-last.x)**2 + (y-last.y)**2);
         let alpha = brushType === 'marker' ? 0.5 : 1.0;
         alpha *= (brushFlow / 100);
         if (brushFalloff > 0) alpha *= Math.max(0, 1 - (strokeDistanceRef.current / (3000 / (brushFalloff * 0.5 || 1))));
         ctx.globalAlpha = alpha;
-
         const points = getSymmetricPoints(x, y);
         const lastPoints = getSymmetricPoints(last.x, last.y);
-
         points.forEach((p, i) => {
             const lp = lastPoints[i];
-            if (brushType === 'spray') {
-                sprayPaint(ctx, p.x, p.y, brushColor, brushSize, brushFlow);
-            } else if (brushShape === 'textured') {
+            if (brushType === 'spray') { sprayPaint(ctx, p.x, p.y, brushColor, brushSize, brushFlow); }
+            else if (brushShape === 'textured') {
                 const dist = Math.hypot(p.x - lp.x, p.y - lp.y), angle = Math.atan2(p.y - lp.y, p.x - lp.x), step = Math.max(1, brushSize / 8); 
                 for (let j = 0; j < dist; j += step) drawTexturedPoint(ctx, lp.x + Math.cos(angle) * j, lp.y + Math.sin(angle) * j, alpha);
-            } else {
-                ctx.beginPath();
-                ctx.moveTo(lp.x, lp.y);
-                ctx.lineTo(p.x, p.y);
-                ctx.stroke();
-            }
+            } else { ctx.beginPath(); ctx.moveTo(lp.x, lp.y); ctx.lineTo(p.x, p.y); ctx.stroke(); }
         });
     }
-
     lastDrawPointRef.current = { x, y };
     needsCompositeRef.current = true;
   };
 
   const handlePointerUp = () => {
     setIsPanning(false);
-    if (isDrawing) {
-      setIsDrawing(false);
-      lastDrawPointRef.current = null;
-      strokeDistanceRef.current = 0;
-      saveHistory(); 
-    }
+    if (isDrawing) { setIsDrawing(false); lastDrawPointRef.current = null; strokeDistanceRef.current = 0; saveHistory(); }
   };
 
   const saveHistory = (currentLayers: Layer[] = layers, w: number = canvasSize.width, h: number = canvasSize.height) => {
@@ -506,16 +580,10 @@ const App: React.FC = () => {
     setHistory(newHistory);
   };
 
-  const handleUndo = () => { if (historyStep > 0) restoreStep(historyStep - 1); };
-  const handleRedo = () => { if (historyStep < history.length - 1) restoreStep(historyStep + 1); };
-  
   const restoreStep = (step: number) => {
     const s = history[step]; if (!s) return;
     setCanvasSize(s.size);
-    if (canvasRef.current) { 
-        canvasRef.current.width = s.size.width; 
-        canvasRef.current.height = s.size.height; 
-    }
+    if (canvasRef.current) { canvasRef.current.width = s.size.width; canvasRef.current.height = s.size.height; }
     const restored: Layer[] = s.layers.map(ls => {
       const l = createLayer(ls.name, s.size.width, s.size.height);
       l.id = ls.id; l.visible = ls.visible; l.opacity = ls.opacity; l.blendMode = ls.blendMode;
@@ -575,39 +643,17 @@ const App: React.FC = () => {
     setLayers(next); saveHistory(next);
   };
 
-  const handleLayerOpacityChange = (id: string, o: number) => setLayers(prev => prev.map(l => l.id === id ? { ...l, opacity: o } : l));
-  const handleLayerOpacityCommit = (id: string, o: number) => { const next = layers.map(l => l.id === id ? { ...l, opacity: o } : l); setLayers(next); saveHistory(next); };
-  const handleLayerBlendChange = (id: string, b: GlobalCompositeOperation) => { const next = layers.map(l => l.id === id ? { ...l, blendMode: b } : l); setLayers(next); saveHistory(next); };
-  const handleToggleVisibility = (id: string) => { const next = layers.map(l => l.id === id ? { ...l, visible: !l.visible } : l); setLayers(next); saveHistory(next); };
-  const handleDeleteLayer = (id: string) => { if (layers.length <= 1) return; const next = layers.filter(l => l.id !== id); setLayers(next); if (activeLayerId === id) setActiveLayerId(next[next.length - 1].id); saveHistory(next); };
-  const handleAddLayer = () => { const l = createLayer(`Layer ${layers.length + 1}`, canvasSize.width, canvasSize.height); setLayers(prev => [...prev, l]); setActiveLayerId(l.id); saveHistory([...layers, l]); };
-  const handleClearLayer = () => { const l = layers.find(lx => lx.id === activeLayerId); if (l) { l.canvas.getContext('2d')?.clearRect(0,0, l.canvas.width, l.canvas.height); needsCompositeRef.current = true; saveHistory(); } };
-  
-  const handleResetZoom = () => setTransform({ x: 0, y: 0, scale: 1 });
-  const handleZoomIn = () => setTransform(p => ({ ...p, scale: Math.min(p.scale + 0.2, 10) }));
-  const handleZoomOut = () => setTransform(p => ({ ...p, scale: Math.max(p.scale - 0.2, 0.1) }));
-  const handleWheel = (e: React.WheelEvent) => {
-    const scaleFactor = 1 - e.deltaY * 0.001;
-    setTransform(p => ({ ...p, scale: Math.min(Math.max(0.1, p.scale * scaleFactor), 10) }));
-  };
-  
   const handleRotateCanvas = (deg: number) => {
     const w = canvasSize.height, h = canvasSize.width;
     const next = layers.map(l => {
       const c = document.createElement('canvas'); c.width = w; c.height = h;
-      const ctx = c.getContext('2d')!; 
-      ctx.save();
-      ctx.translate(w/2, h/2); 
-      ctx.rotate(deg * Math.PI / 180); 
-      ctx.drawImage(l.canvas, -l.canvas.width/2, -l.canvas.height/2);
-      ctx.restore();
+      const ctx = c.getContext('2d')!; ctx.save(); ctx.translate(w/2, h/2); ctx.rotate(deg * Math.PI / 180); ctx.drawImage(l.canvas, -l.canvas.width/2, -l.canvas.height/2); ctx.restore();
       return { ...l, canvas: c };
     });
     setCanvasSize({ width: w, height: h }); if (canvasRef.current) { canvasRef.current.width = w; canvasRef.current.height = h; }
     setLayers(next); saveHistory(next, w, h);
   };
 
-  const openResizeDialog = () => { setResizeWidth(canvasSize.width); setResizeHeight(canvasSize.height); setShowResizeDialog(true); };
   const applyResize = () => {
     const w = resizeWidth, h = resizeHeight;
     const next = layers.map(l => {
@@ -642,48 +688,16 @@ const App: React.FC = () => {
         };
     }; r.readAsDataURL(f); }
   };
-  const handleReplaceLayerContent = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const f = e.target.files?.[0]; if (f && activeLayerId) { const r = new FileReader(); r.onload = ev => {
-        const img = new Image(); img.src = ev.target?.result as string;
-        img.onload = () => {
-            const lx = layers.find(l => l.id === activeLayerId); if (!lx) return;
-            lx.canvas.getContext('2d')?.clearRect(0,0,lx.canvas.width,lx.canvas.height);
-            lx.canvas.getContext('2d')?.drawImage(img, 0, 0, lx.canvas.width, lx.canvas.height);
-            needsCompositeRef.current = true; saveHistory();
-        };
-    }; r.readAsDataURL(f); }
-  };
   
-  const stopCamera = () => { if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); setShowCamera(false); };
-  const capturePhoto = () => {
-    if (videoRef.current) {
-        const v = videoRef.current, c = document.createElement('canvas'); 
-        c.width = v.videoWidth; 
-        c.height = v.videoHeight;
-        c.getContext('2d')?.drawImage(v, 0, 0); 
-        initEditorWithImage(c.toDataURL()); 
-        stopCamera();
-    }
-  };
-  const toggleCameraFacing = () => startCamera(facingMode === 'user' ? 'environment' : 'user');
-
   const handleDragStart = (e: React.PointerEvent) => {
     setIsDraggingToolbar(true);
-    dragStartRef.current = {
-      x: e.clientX - toolbarPos.x,
-      y: e.clientY - toolbarPos.y,
-    };
+    dragStartRef.current = { x: e.clientX - toolbarPos.x, y: e.clientY - toolbarPos.y };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
-
   const handleDragMove = (e: React.PointerEvent) => {
     if (!isDraggingToolbar) return;
-    setToolbarPos({
-      x: e.clientX - dragStartRef.current.x,
-      y: e.clientY - dragStartRef.current.y,
-    });
+    setToolbarPos({ x: e.clientX - dragStartRef.current.x, y: e.clientY - dragStartRef.current.y });
   };
-
   const handleDragEnd = (e: React.PointerEvent) => {
     if (!isDraggingToolbar) return;
     setIsDraggingToolbar(false);
@@ -712,7 +726,7 @@ const App: React.FC = () => {
           <div className="relative flex-1 bg-black overflow-hidden">
              <video ref={videoRef} className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`} autoPlay playsInline muted />
              <div className="absolute top-6 left-6 right-6 flex justify-between">
-               <button onClick={stopCamera} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white"><IconX className="w-6 h-6" /></button>
+               <button onClick={() => setShowCamera(false)} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white"><IconX className="w-6 h-6" /></button>
                <button onClick={toggleCameraFacing} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white"><IconFlipCamera className="w-6 h-6" /></button>
              </div>
              <div className="absolute bottom-12 left-0 right-0 flex justify-center">
@@ -725,12 +739,12 @@ const App: React.FC = () => {
       {showResizeDialog && (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur flex items-center justify-center p-4">
               <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm">
-                  <h3 className="text-lg font-bold mb-4">Resize Image</h3>
+                  <h3 className="text-lg font-bold mb-4 text-white">Resize Image</h3>
                   <div className="grid grid-cols-2 gap-4 mb-4">
-                      <div><label className="text-xs text-gray-400 uppercase">Width</label><input type="number" value={resizeWidth} onChange={e => { const v = parseInt(e.target.value)||0; setResizeWidth(v); if(keepAspect) setResizeHeight(Math.round(v*(canvasSize.height/canvasSize.width))); }} className="w-full bg-gray-800 rounded p-2"/></div>
-                      <div><label className="text-xs text-gray-400 uppercase">Height</label><input type="number" value={resizeHeight} onChange={e => { const v = parseInt(e.target.value)||0; setResizeHeight(v); if(keepAspect) setResizeWidth(Math.round(v*(canvasSize.width/canvasSize.height))); }} className="w-full bg-gray-800 rounded p-2"/></div>
+                      <div><label className="text-xs text-gray-400 uppercase">Width</label><input type="number" value={resizeWidth} onChange={e => { const v = parseInt(e.target.value)||0; setResizeWidth(v); if(keepAspect) setResizeHeight(Math.round(v*(canvasSize.height/canvasSize.width))); }} className="w-full bg-gray-800 rounded p-2 text-white border border-gray-700"/></div>
+                      <div><label className="text-xs text-gray-400 uppercase">Height</label><input type="number" value={resizeHeight} onChange={e => { const v = parseInt(e.target.value)||0; setResizeHeight(v); if(keepAspect) setResizeWidth(Math.round(v*(canvasSize.width/canvasSize.height))); }} className="w-full bg-gray-800 rounded p-2 text-white border border-gray-700"/></div>
                   </div>
-                  <div className="flex gap-2"><button onClick={() => setShowResizeDialog(false)} className="flex-1 py-2 bg-gray-800 rounded">Cancel</button><button onClick={applyResize} className="flex-1 py-2 bg-indigo-600 rounded">Apply</button></div>
+                  <div className="flex gap-2"><button onClick={() => setShowResizeDialog(false)} className="flex-1 py-3 bg-gray-800 rounded-xl font-bold">Cancel</button><button onClick={applyResize} className="flex-1 py-3 bg-indigo-600 rounded-xl font-bold">Apply</button></div>
               </div>
           </div>
       )}
@@ -738,27 +752,97 @@ const App: React.FC = () => {
       <header className="p-4 border-b border-gray-800 flex items-center justify-between bg-black/80 backdrop-blur-md z-30 shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center shadow-lg"><IconWand className="text-white w-5 h-5" /></div>
-          <h1 className="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">MagicLens</h1>
+          <h1 className="text-xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">MagicLens</h1>
         </div>
       </header>
 
       <main className="flex-1 flex flex-col relative w-full overflow-hidden">
         {mode === AppMode.GENERATE && (
-          <div className="flex-1 overflow-y-auto p-4 pb-32 animate-fade-in">
-            <div className="max-w-4xl mx-auto space-y-6">
-              <div className="bg-gray-900 rounded-3xl p-8 border border-gray-800 shadow-2xl">
-                <h2 className="text-2xl font-bold mb-6">Create with AI</h2>
-                <textarea value={genPrompt} onChange={e => setGenPrompt(e.target.value)} placeholder="Describe your masterpiece..." className="w-full bg-gray-950 border border-gray-800 rounded-2xl p-6 h-40 focus:ring-2 focus:ring-indigo-500 transition-all resize-none text-lg mb-6"/>
-                <div className="grid grid-cols-2 gap-6 mb-8">
-                    <div><label className="text-xs font-black uppercase text-gray-500 tracking-widest mb-2 block">Aspect Ratio</label><select value={aspectRatio} onChange={e => setAspectRatio(e.target.value as any)} className="w-full bg-gray-800 rounded-xl p-3">{Object.values(AspectRatio).map(r => <option key={r} value={r}>{r}</option>)}</select></div>
-                    <div><label className="text-xs font-black uppercase text-gray-500 tracking-widest mb-2 block">Resolution</label><div className="flex bg-gray-800 rounded-xl p-1">{Object.values(ImageResolution).map(r => <button key={r} onClick={() => setImageSize(r)} className={`flex-1 py-2 text-xs font-bold rounded-lg ${imageSize === r ? 'bg-gray-700 text-white' : 'text-gray-400'}`}>{r}</button>)}</div></div>
+          <div className="flex-1 overflow-y-auto p-6 pb-40 animate-fade-in custom-scrollbar">
+            <div className="max-w-5xl mx-auto space-y-12">
+              <div className="text-center space-y-4">
+                 <h2 className="text-5xl font-black tracking-tight text-white">Create Magic</h2>
+                 <p className="text-gray-400 text-lg max-w-2xl mx-auto">Generate high-fidelity visual assets using the latest Gemini models.</p>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+                <div className="lg:col-span-7 space-y-6">
+                  <div className="bg-gray-900/50 backdrop-blur border border-white/5 rounded-[40px] p-8 shadow-2xl space-y-6">
+                    <div className="space-y-4">
+                      <div className="flex justify-between items-center px-1">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Your Prompt</label>
+                        <button onClick={() => setGenPrompt("")} className="text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300">Clear</button>
+                      </div>
+                      <textarea value={genPrompt} onChange={e => setGenPrompt(e.target.value)} placeholder="A celestial fox dancing in the aurora borealis..." className="w-full bg-gray-950/50 border border-white/5 rounded-3xl p-6 h-48 focus:ring-2 focus:ring-indigo-500/50 transition-all resize-none text-lg text-white font-medium outline-none"/>
+                    </div>
+
+                    <div className="space-y-4">
+                       <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 px-1">Quick Suggestions</label>
+                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                         {SUGGESTED_PROMPTS.map((p, i) => (
+                           <button key={i} onClick={() => setGenPrompt(p)} className="text-left px-4 py-3 bg-white/5 hover:bg-white/10 rounded-2xl text-[11px] font-medium text-gray-400 border border-transparent hover:border-white/10 transition-all truncate">
+                             {p}
+                           </button>
+                         ))}
+                       </div>
+                    </div>
+                  </div>
                 </div>
-                <button onClick={handleGenerate} disabled={isGenerating||!genPrompt} className="w-full py-5 bg-gradient-to-r from-indigo-600 to-purple-600 rounded-2xl font-black text-white shadow-xl hover:scale-[1.01] transition-all active:scale-95 disabled:opacity-50">{isGenerating ? 'Dreaming...' : 'Generate Magic'}</button>
+
+                <div className="lg:col-span-5 space-y-6">
+                  <div className="bg-gray-900/50 backdrop-blur border border-white/5 rounded-[40px] p-8 shadow-2xl space-y-8">
+                    <div className="space-y-4">
+                      <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 px-1">Engine</label>
+                      <div className="flex bg-gray-950 p-1.5 rounded-2xl border border-white/5">
+                        <button onClick={() => setGenModel('gemini-2.5-flash-image')} className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${genModel === 'gemini-2.5-flash-image' ? 'bg-indigo-600 text-white shadow-xl' : 'text-gray-500 hover:bg-white/5'}`}>Nano Banana</button>
+                        <button onClick={() => setGenModel('gemini-3-pro-image-preview')} className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${genModel === 'gemini-3-pro-image-preview' ? 'bg-indigo-600 text-white shadow-xl' : 'text-gray-500 hover:bg-white/5'}`}>Pro Engine</button>
+                      </div>
+                      <p className="text-[9px] text-gray-500 font-bold text-center px-4 leading-relaxed">
+                        {genModel === 'gemini-2.5-flash-image' ? "Lightweight & fast. Great for quick drafts." : "Maximum quality & detail. Requires API Key selection."}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 px-1">Aspect Ratio</label>
+                        <select value={aspectRatio} onChange={e => setAspectRatio(e.target.value as any)} className="w-full bg-gray-950 border border-white/5 rounded-2xl p-3.5 text-xs font-bold text-white outline-none cursor-pointer focus:border-indigo-500/50 transition-colors">
+                          {Object.values(AspectRatio).map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                      </div>
+                      <div className="space-y-3">
+                        <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 px-1">Resolution</label>
+                        <div className="flex bg-gray-950 p-1.5 rounded-2xl border border-white/5">
+                           {Object.values(ImageResolution).map(r => (
+                             <button key={r} onClick={() => setImageSize(r)} className={`flex-1 py-2 text-[10px] font-black rounded-lg transition-all ${imageSize === r ? 'bg-gray-800 text-white' : 'text-gray-600 hover:text-gray-400'}`}>{r}</button>
+                           ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <button onClick={handleGenerate} disabled={isGenerating || !genPrompt} className="w-full py-6 bg-gradient-to-r from-indigo-600 to-purple-600 rounded-[30px] font-black uppercase tracking-[0.2em] text-[12px] text-white shadow-2xl shadow-indigo-500/20 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3">
+                      {isGenerating ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <><IconWand className="w-5 h-5"/> Generate Magic</>}
+                    </button>
+                  </div>
+                </div>
               </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {isGenerating && <div className="aspect-square bg-gray-900 rounded-3xl flex items-center justify-center border border-gray-800"><ProcessingOverlay text="Dreaming..."/></div>}
-                {generatedImages.map((src, i) => <div key={i} className="group relative rounded-3xl overflow-hidden border border-gray-800 shadow-xl"><img src={src} className="w-full h-auto" alt="AI Generated"/><div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"><button onClick={() => downloadImage(src, 'magic.png')} className="px-6 py-3 bg-white text-black rounded-full font-bold">Download</button></div></div>)}
-              </div>
+
+              {generatedImages.length > 0 && (
+                <div className="space-y-8 animate-fade-in pt-8">
+                   <div className="flex items-center gap-4"><div className="h-px flex-1 bg-white/5"></div><span className="text-[10px] font-black uppercase tracking-widest text-gray-600">Generated Results</span><div className="h-px flex-1 bg-white/5"></div></div>
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+                      {generatedImages.map((src, i) => (
+                        <div key={i} className="group relative rounded-[40px] overflow-hidden border border-white/5 shadow-[0_20px_50px_rgba(0,0,0,0.4)] bg-gray-900 transition-all hover:scale-[1.02]">
+                          <img src={src} className="w-full h-auto object-cover" alt="AI Generated Output"/>
+                          <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-4 transition-all duration-300">
+                             <button onClick={() => downloadImage(src, `magic-${Date.now()}.png`)} className="px-8 py-4 bg-white text-black rounded-[24px] font-black uppercase text-[10px] tracking-widest flex items-center gap-2 hover:scale-110 active:scale-95 transition-all">
+                               <IconDownload className="w-4 h-4" /> Save Asset
+                             </button>
+                          </div>
+                        </div>
+                      ))}
+                   </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -801,7 +885,6 @@ const App: React.FC = () => {
                       <button onClick={handleZoomOut} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors"><IconZoomOut className="w-5 h-5"/></button>
                       <button onClick={handleResetZoom} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-indigo-400 border-t border-white/5 mt-2"><div className="w-1.5 h-1.5 rounded-full bg-current"/></button>
                     </div>
-
                     <div className={`absolute right-6 top-6 z-30 transition-all ${showLayerPanel ? 'w-80' : 'w-auto'}`}>
                         {!showLayerPanel && <button onClick={() => setShowLayerPanel(true)} className="p-4 bg-black/80 backdrop-blur border border-white/10 rounded-2xl text-white shadow-xl hover:scale-105 active:scale-95 transition-all"><IconLayers className="w-6 h-6"/></button>}
                         {showLayerPanel && (
@@ -825,7 +908,6 @@ const App: React.FC = () => {
                            </div>
                         )}
                     </div>
-
                     <div ref={toolbarRef} onPointerDown={handleDragStart} onPointerMove={handleDragMove} onPointerUp={handleDragEnd} onPointerCancel={handleDragEnd} style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }} className={`absolute left-6 top-6 w-auto bg-black/90 backdrop-blur-xl rounded-[32px] border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing z-30 transition-all ${isToolbarMinimized ? 'p-2' : 'p-4'}`}>
                         <div className="flex justify-between items-center gap-4" onPointerDown={e => e.stopPropagation()}>
                            <div className="p-1 opacity-40" onPointerDown={handleDragStart}><IconMove className="w-4 h-4 text-gray-400" /></div>
@@ -916,7 +998,7 @@ const App: React.FC = () => {
                       <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur flex items-center justify-center p-6 animate-fade-in">
                         <div className="bg-[#0c0c0e] rounded-[40px] p-8 max-w-2xl w-full border border-white/10 relative">
                            <button onClick={() => setEditedImages([])} className="absolute -top-4 -right-4 p-3 bg-gray-900 rounded-2xl text-white shadow-xl transition-all hover:rotate-90"><IconX className="w-5 h-5"/></button>
-                           <h2 className="text-2xl font-black uppercase mb-8">Magic Result</h2>
+                           <h2 className="text-2xl font-black uppercase mb-8 text-white">Magic Result</h2>
                            <div className="grid grid-cols-1 gap-6">
                               {editedImages.map((src, i) => (
                                 <div key={i} className="relative rounded-[32px] overflow-hidden group bg-black shadow-2xl">
@@ -934,7 +1016,7 @@ const App: React.FC = () => {
 
         {mode === AppMode.GALLERY && (
           <div className="flex-1 overflow-y-auto p-6 animate-fade-in pb-32">
-            <div className="max-w-6xl mx-auto"><h2 className="text-3xl font-black tracking-tight mb-8">Magic Gallery</h2>
+            <div className="max-w-6xl mx-auto"><h2 className="text-3xl font-black tracking-tight mb-8 text-white">Magic Gallery</h2>
               {galleryItems.length === 0 ? <div className="text-center py-32 text-gray-500"><IconHistory className="w-16 h-16 mx-auto mb-4 opacity-20" /><p>Your creations will appear here.</p></div> : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">{galleryItems.map(item => (
                 <div key={item.id} className="group relative bg-gray-900/50 rounded-[32px] overflow-hidden border border-white/5 shadow-xl transition-all hover:scale-[1.02] hover:shadow-indigo-500/5"><img src={item.src} className="w-full h-64 object-cover" alt="Gallery item" /><div className="p-6"><div className="flex justify-between items-start mb-3"><span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${item.type === 'generated' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-purple-500/20 text-purple-400'}`}>{item.type}</span><span className="text-[10px] text-gray-600 font-bold">{new Date(item.timestamp).toLocaleDateString()}</span></div><p className="text-sm text-gray-300 font-medium line-clamp-2">{item.prompt}</p></div><div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4"><button onClick={() => downloadImage(item.src, 'gallery.png')} className="p-4 bg-white/10 backdrop-blur rounded-full text-white"><IconDownload className="w-6 h-6"/></button><button onClick={() => { if(confirm('Delete?')) deleteItem(item.id).then(loadGallery); }} className="p-4 bg-red-500/20 rounded-full text-red-400"><IconTrash className="w-6 h-6"/></button></div></div>
               ))}</div>}
