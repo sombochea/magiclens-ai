@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { AppMode, AspectRatio, ImageResolution, HistoryItem, Layer, LayerSnapshot, HistoryState } from './types';
 import { generateImage, editImage } from './services/geminiService';
@@ -155,7 +154,6 @@ const App: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null); 
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null); 
-  const replaceInputRef = useRef<HTMLInputElement>(null); 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastDrawPointRef = useRef<{x: number, y: number} | null>(null);
@@ -166,6 +164,7 @@ const App: React.FC = () => {
   const toolbarRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const brushTipCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const cachedBoundingRectRef = useRef<DOMRect | null>(null);
 
   useEffect(() => {
     initDB().then(() => loadGallery());
@@ -193,41 +192,52 @@ const App: React.FC = () => {
     document.body.removeChild(link);
   };
 
+  // Pre-render brush tip for performance
   useEffect(() => {
-    if (brushShape === 'textured') {
-      const size = Math.max(1, brushSize);
-      const canvas = document.createElement('canvas');
-      canvas.width = size * 2;
-      canvas.height = size * 2;
-      const ctx = canvas.getContext('2d');
-      if (ctx) {
-        const radius = size / 2;
-        const density = Math.max(10, size * 2);
-        const center = size;
-        ctx.fillStyle = brushColor;
+    const size = Math.max(1, brushSize);
+    const canvas = document.createElement('canvas');
+    canvas.width = size * 2;
+    canvas.height = size * 2;
+    const ctx = canvas.getContext('2d');
+    if (ctx) {
+      const center = size;
+      const radius = size / 2;
+      
+      ctx.fillStyle = brushColor;
+      if (brushShape === 'round') {
+        ctx.beginPath();
+        ctx.arc(center, center, radius, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (brushShape === 'square') {
+        ctx.fillRect(center - radius, center - radius, size, size);
+      } else if (brushShape === 'textured') {
+        // High-performance textured tip
+        const density = Math.max(20, size * 2);
         for (let i = 0; i < density; i++) {
-            const angle = Math.random() * Math.PI * 2;
-            const r = Math.sqrt(Math.random()) * radius;
-            const dx = Math.cos(angle) * r;
-            const dy = Math.sin(angle) * r;
-            ctx.globalAlpha = Math.random(); 
-            ctx.fillRect(center + dx, center + dy, 1, 1); 
+          const r = Math.sqrt(Math.random()) * radius;
+          const theta = Math.random() * Math.PI * 2;
+          ctx.globalAlpha = Math.random() * 0.6;
+          ctx.fillRect(center + Math.cos(theta) * r, center + Math.sin(theta) * r, 1.5, 1.5);
         }
       }
-      brushTipCanvasRef.current = canvas;
     }
+    brushTipCanvasRef.current = canvas;
   }, [brushShape, brushSize, brushColor]);
 
   const renderCompositeCanvas = useCallback(() => {
     const mainCanvas = canvasRef.current;
     if (!mainCanvas) return;
-    const ctx = mainCanvas.getContext('2d');
+    const ctx = mainCanvas.getContext('2d', { alpha: false }); // Opt: No alpha for main composition if not needed
     if (!ctx) return;
+    
     if (mainCanvas.width !== canvasSize.width || mainCanvas.height !== canvasSize.height) {
       mainCanvas.width = canvasSize.width;
       mainCanvas.height = canvasSize.height;
     }
-    ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, mainCanvas.width, mainCanvas.height);
+    
     layers.forEach(layer => {
       if (layer.visible) {
         ctx.globalAlpha = layer.opacity;
@@ -235,6 +245,7 @@ const App: React.FC = () => {
         ctx.drawImage(layer.canvas, 0, 0);
       }
     });
+    
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
     needsCompositeRef.current = false;
@@ -250,22 +261,13 @@ const App: React.FC = () => {
   }, [renderCompositeCanvas]);
 
   useEffect(() => { needsCompositeRef.current = true; }, [layers, canvasSize, previewBlendMode, activeLayerId]);
-  useEffect(() => { setShowBlendMenu(false); setPreviewBlendMode(null); }, [activeLayerId]);
 
-  // -- Missing Fixes: Camera, Zoom, and History management --
-
-  /**
-   * Toggle camera between user and environment modes
-   */
   const toggleCameraFacing = () => {
     const next = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(next);
     startCamera(next);
   };
 
-  /**
-   * Capture a photo from the video stream
-   */
   const capturePhoto = () => {
     if (!videoRef.current) return;
     const canvas = document.createElement('canvas');
@@ -284,47 +286,27 @@ const App: React.FC = () => {
     }
   };
 
-  /**
-   * Handle canvas zooming and panning with wheel
-   */
   const handleWheel = (e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
         const delta = -e.deltaY;
         const scaleChange = delta > 0 ? 1.1 : 0.9;
-        setTransform(t => ({ ...t, scale: Math.max(0.1, Math.min(5, t.scale * scaleChange)) }));
+        setTransform(t => ({ ...t, scale: Math.max(0.1, Math.min(10, t.scale * scaleChange)) }));
     } else {
         setTransform(t => ({ ...t, x: t.x - e.deltaX, y: t.y - e.deltaY }));
     }
   };
 
-  /**
-   * Zoom increment
-   */
-  const handleZoomIn = () => setTransform(t => ({ ...t, scale: Math.min(t.scale * 1.2, 5) }));
-
-  /**
-   * Zoom decrement
-   */
+  const handleZoomIn = () => setTransform(t => ({ ...t, scale: Math.min(t.scale * 1.2, 10) }));
   const handleZoomOut = () => setTransform(t => ({ ...t, scale: Math.max(t.scale / 1.2, 0.1) }));
-
-  /**
-   * Reset zoom and position
-   */
   const handleResetZoom = () => setTransform({ x: 0, y: 0, scale: 1 });
 
-  /**
-   * Toggle layer visibility
-   */
   const handleToggleVisibility = (id: string) => {
     const next = layers.map(l => l.id === id ? { ...l, visible: !l.visible } : l);
     setLayers(next);
     saveHistory(next);
   };
 
-  /**
-   * Delete a layer
-   */
   const handleDeleteLayer = (id: string) => {
     const next = layers.filter(l => l.id !== id);
     setLayers(next);
@@ -332,9 +314,6 @@ const App: React.FC = () => {
     saveHistory(next);
   };
 
-  /**
-   * Add a new empty layer
-   */
   const handleAddLayer = () => {
     const l = createLayer(`Layer ${layers.length + 1}`, canvasSize.width, canvasSize.height);
     const next = [...layers, l];
@@ -343,18 +322,12 @@ const App: React.FC = () => {
     saveHistory(next);
   };
 
-  /**
-   * Open the resize dialog and init values
-   */
   const openResizeDialog = () => {
     setResizeWidth(canvasSize.width);
     setResizeHeight(canvasSize.height);
     setShowResizeDialog(true);
   };
 
-  /**
-   * Clear the active layer's canvas
-   */
   const handleClearLayer = () => {
     if (!activeLayerId) return;
     const layer = layers.find(l => l.id === activeLayerId);
@@ -367,43 +340,26 @@ const App: React.FC = () => {
     }
   };
 
-  /**
-   * Undo last action
-   */
   const handleUndo = () => { if (historyStep > 0) restoreStep(historyStep - 1); };
-
-  /**
-   * Redo last undone action
-   */
   const handleRedo = () => { if (historyStep < history.length - 1) restoreStep(historyStep + 1); };
 
   const handleGenerate = async () => {
     if (!genPrompt.trim()) return;
-
     if (genModel === 'gemini-3-pro-image-preview') {
       if (typeof window !== 'undefined' && (window as any).aistudio) {
         try {
           const hasKey = await (window as any).aistudio.hasSelectedApiKey();
-          if (!hasKey) {
-            await (window as any).aistudio.openSelectKey();
-          }
-        } catch (e) {
-          console.warn("API key check error", e);
-        }
+          if (!hasKey) await (window as any).aistudio.openSelectKey();
+        } catch (e) { console.warn("API key check error", e); }
       }
     }
-
     setIsGenerating(true);
     try {
       const results = await generateImage(genPrompt, aspectRatio, imageSize, genModel);
       setGeneratedImages(prev => [...results, ...prev]);
       await saveItem({ id: Date.now().toString(), type: 'generated', src: results[0], prompt: genPrompt, timestamp: Date.now() });
       loadGallery();
-    } catch (e) {
-      alert("Failed to generate image.");
-    } finally {
-      setIsGenerating(false);
-    }
+    } catch (e) { alert("Failed to generate image."); } finally { setIsGenerating(false); }
   };
 
   const initEditorWithImage = (src: string) => {
@@ -414,10 +370,6 @@ const App: React.FC = () => {
       const w = Math.floor(img.width * scale);
       const h = Math.floor(img.height * scale);
       setCanvasSize({ width: w, height: h });
-      if (canvasRef.current) { 
-        canvasRef.current.width = w; 
-        canvasRef.current.height = h; 
-      }
       const bg = createLayer('Background', w, h);
       bg.canvas.getContext('2d')?.drawImage(img, 0, 0, w, h);
       setLayers([bg]);
@@ -438,26 +390,30 @@ const App: React.FC = () => {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: mode } });
       streamRef.current = stream;
       if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.play(); }
-    } catch (err) {
-      alert("Camera access failed.");
-      setShowCamera(false);
-    }
+    } catch (err) { alert("Camera access failed."); setShowCamera(false); }
   };
 
   const getSymmetricPoints = (x: number, y: number) => {
     const cx = canvasSize.width / 2;
     const cy = canvasSize.height / 2;
     const points = [{ x, y }];
-    if (symmetry === 'vertical') { points.push({ x: 2 * cx - x, y }); }
-    else if (symmetry === 'horizontal') { points.push({ x, y: 2 * cy - y }); }
-    else if (symmetry === 'radial') {
+
+    if (symmetry === 'vertical') {
+      points.push({ x: 2 * cx - x, y });
+    } else if (symmetry === 'horizontal') {
+      points.push({ x, y: 2 * cy - y });
+    } else if (symmetry === 'radial') {
       const angleStep = (2 * Math.PI) / radialCount;
-      const dx = x - cx, dy = y - cy;
-      const radius = Math.sqrt(dx * dx + dy * dy);
-      const startAngle = Math.atan2(dy, dx);
+      const cos = Math.cos(angleStep);
+      const sin = Math.sin(angleStep);
+      let dx = x - cx;
+      let dy = y - cy;
       for (let i = 1; i < radialCount; i++) {
-        const angle = startAngle + angleStep * i;
-        points.push({ x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius });
+        const nx = dx * cos - dy * sin;
+        const ny = dx * sin + dy * cos;
+        dx = nx;
+        dy = ny;
+        points.push({ x: cx + dx, y: cy + dy });
       }
     }
     return points;
@@ -467,60 +423,68 @@ const App: React.FC = () => {
     if (isDraggingToolbar) return;
     const canvas = canvasRef.current;
     if (!canvas) return;
+
+    // Cache the rect for performance during the stroke
+    cachedBoundingRectRef.current = canvas.getBoundingClientRect();
+
     if (brushType === 'pan') {
       setIsPanning(true);
       const {clientX: x, clientY: y} = 'touches' in e ? e.touches[0] : e;
       panStartRef.current = { x: x - transform.x, y: y - transform.y };
       return;
     }
+
     if (!activeLayerId) return;
     const layer = layers.find(l => l.id === activeLayerId);
     if (!layer || !layer.visible) return;
+
     setIsDrawing(true);
     strokeDistanceRef.current = 0; 
     const ctx = layer.canvas.getContext('2d');
     if (!ctx) return;
-    const rect = canvas.getBoundingClientRect();
+    
+    const rect = cachedBoundingRectRef.current;
     const {clientX: cx, clientY: cy} = 'touches' in e ? e.touches[0] : e;
-    let x = (cx - rect.left) * (canvas.width / rect.width);
-    let y = (cy - rect.top) * (canvas.height / rect.height);
-    if (brushJitter > 0) { x += (Math.random() - 0.5) * brushJitter; y += (Math.random() - 0.5) * brushJitter; }
+    const x = (cx - rect.left) * (canvas.width / rect.width);
+    const y = (cy - rect.top) * (canvas.height / rect.height);
+    
     const points = getSymmetricPoints(x, y);
     ctx.lineWidth = brushSize;
     ctx.lineCap = brushShape === 'square' ? 'square' : 'round';
     ctx.lineJoin = brushShape === 'square' ? 'bevel' : 'round';
     ctx.strokeStyle = brushColor;
     ctx.fillStyle = brushColor;
+
     let alpha = brushType === 'marker' ? 0.5 : 1.0;
     alpha *= (brushFlow / 100);
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = brushType === 'eraser' ? 'destination-out' : 'source-over';
-    points.forEach(p => {
-        if (brushType === 'spray') { sprayPaint(ctx, p.x, p.y, brushColor, brushSize, brushFlow); }
-        else if (brushShape === 'textured') { drawTexturedPoint(ctx, p.x, p.y, alpha); }
-        else { ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(p.x, p.y); ctx.stroke(); }
-    });
+
+    // Batched drawing
+    if (brushType === 'pen' || brushType === 'eraser' || brushType === 'marker') {
+      ctx.beginPath();
+      points.forEach(p => {
+        ctx.moveTo(p.x, p.y);
+        ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+    } else if (brushType === 'spray') {
+      points.forEach(p => sprayPaint(ctx, p.x, p.y));
+    }
+
     lastDrawPointRef.current = { x, y };
     needsCompositeRef.current = true;
   };
 
-  const sprayPaint = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, size: number, flow: number) => {
-    ctx.fillStyle = color;
-    const density = Math.floor(size * (flow / 20)); 
+  const sprayPaint = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
+    const size = brushSize;
+    const density = Math.floor(size * (brushFlow / 40)); 
     for (let i = 0; i < density; i++) {
-      const angle = Math.random() * 2 * Math.PI;
-      const radius = Math.sqrt(Math.random()) * size; 
-      ctx.globalAlpha = Math.random() * 0.5 + 0.2; 
-      ctx.beginPath(); ctx.arc(x + radius * Math.cos(angle), y + radius * Math.sin(angle), Math.random() * 1.5 + 0.5, 0, Math.PI * 2); ctx.fill();
+      const r = Math.sqrt(Math.random()) * size;
+      const theta = Math.random() * Math.PI * 2;
+      ctx.globalAlpha = Math.random() * 0.4;
+      ctx.fillRect(x + Math.cos(theta) * r, y + Math.sin(theta) * r, 1.5, 1.5);
     }
-    ctx.globalAlpha = 1.0; 
-  };
-
-  const drawTexturedPoint = (ctx: CanvasRenderingContext2D, x: number, y: number, alpha: number) => {
-    if (!brushTipCanvasRef.current) return;
-    ctx.globalAlpha = alpha;
-    ctx.drawImage(brushTipCanvasRef.current, x - brushSize, y - brushSize);
-    ctx.globalAlpha = 1.0;
   };
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
@@ -530,41 +494,69 @@ const App: React.FC = () => {
       setTransform(p => ({ ...p, x: x - panStartRef.current.x, y: y - panStartRef.current.y }));
       return;
     }
-    if (!isDrawing || !canvasRef.current) return;
-    const canvas = canvasRef.current;
+    if (!isDrawing || !canvasRef.current || !cachedBoundingRectRef.current) return;
     const layer = layers.find(l => l.id === activeLayerId);
     if (!layer) return;
     const ctx = layer.canvas.getContext('2d');
     if (!ctx) return;
-    const rect = canvas.getBoundingClientRect();
+
+    const rect = cachedBoundingRectRef.current;
     const {clientX: cx, clientY: cy} = 'touches' in e ? e.touches[0] : e;
-    let x = (cx - rect.left) * (canvas.width / rect.width);
-    let y = (cy - rect.top) * (canvas.height / rect.height);
-    if (brushJitter > 0) { x += (Math.random() - 0.5) * brushJitter; y += (Math.random() - 0.5) * brushJitter; }
+    let x = (cx - rect.left) * (canvasRef.current.width / rect.width);
+    let y = (cy - rect.top) * (canvasRef.current.height / rect.height);
+    
+    if (brushJitter > 0) { 
+        x += (Math.random() - 0.5) * brushJitter; 
+        y += (Math.random() - 0.5) * brushJitter; 
+    }
+    
     const last = lastDrawPointRef.current;
     if (last) {
-        strokeDistanceRef.current += Math.sqrt((x-last.x)**2 + (y-last.y)**2);
+        const dx = x - last.x;
+        const dy = y - last.y;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+        strokeDistanceRef.current += dist;
+        
         let alpha = brushType === 'marker' ? 0.5 : 1.0;
         alpha *= (brushFlow / 100);
         if (brushFalloff > 0) alpha *= Math.max(0, 1 - (strokeDistanceRef.current / (3000 / (brushFalloff * 0.5 || 1))));
         ctx.globalAlpha = alpha;
+
         const points = getSymmetricPoints(x, y);
         const lastPoints = getSymmetricPoints(last.x, last.y);
-        points.forEach((p, i) => {
+
+        if (brushType === 'spray') {
+          points.forEach(p => sprayPaint(ctx, p.x, p.y));
+        } else if (brushShape === 'textured' && brushTipCanvasRef.current) {
+          const steps = Math.ceil(dist / Math.max(1, brushSize / 8));
+          for (let s = 0; s <= steps; s++) {
+            const t = s / steps;
+            points.forEach((p, i) => {
+              const lp = lastPoints[i];
+              const curX = lp.x + (p.x - lp.x) * t;
+              const curY = lp.y + (p.y - lp.y) * t;
+              ctx.drawImage(brushTipCanvasRef.current!, curX - brushSize, curY - brushSize);
+            });
+          }
+        } else {
+          // Optimized batched stroke for standard brushes
+          ctx.beginPath();
+          points.forEach((p, i) => {
             const lp = lastPoints[i];
-            if (brushType === 'spray') { sprayPaint(ctx, p.x, p.y, brushColor, brushSize, brushFlow); }
-            else if (brushShape === 'textured') {
-                const dist = Math.hypot(p.x - lp.x, p.y - lp.y), angle = Math.atan2(p.y - lp.y, p.x - lp.x), step = Math.max(1, brushSize / 8); 
-                for (let j = 0; j < dist; j += step) drawTexturedPoint(ctx, lp.x + Math.cos(angle) * j, lp.y + Math.sin(angle) * j, alpha);
-            } else { ctx.beginPath(); ctx.moveTo(lp.x, lp.y); ctx.lineTo(p.x, p.y); ctx.stroke(); }
-        });
+            ctx.moveTo(lp.x, lp.y);
+            ctx.lineTo(p.x, p.y);
+          });
+          ctx.stroke();
+        }
     }
+
     lastDrawPointRef.current = { x, y };
     needsCompositeRef.current = true;
   };
 
   const handlePointerUp = () => {
     setIsPanning(false);
+    cachedBoundingRectRef.current = null;
     if (isDrawing) { setIsDrawing(false); lastDrawPointRef.current = null; strokeDistanceRef.current = 0; saveHistory(); }
   };
 
@@ -576,14 +568,13 @@ const App: React.FC = () => {
     const newHistory = history.slice(0, historyStep + 1);
     newHistory.push({ layers: snapshots, size: { width: w, height: h } });
     if (newHistory.length > 20) newHistory.shift();
-    else setHistoryStep(prev => prev + 1);
+    else setHistoryStep(newHistory.length - 1);
     setHistory(newHistory);
   };
 
   const restoreStep = (step: number) => {
     const s = history[step]; if (!s) return;
     setCanvasSize(s.size);
-    if (canvasRef.current) { canvasRef.current.width = s.size.width; canvasRef.current.height = s.size.height; }
     const restored: Layer[] = s.layers.map(ls => {
       const l = createLayer(ls.name, s.size.width, s.size.height);
       l.id = ls.id; l.visible = ls.visible; l.opacity = ls.opacity; l.blendMode = ls.blendMode;
@@ -650,7 +641,7 @@ const App: React.FC = () => {
       const ctx = c.getContext('2d')!; ctx.save(); ctx.translate(w/2, h/2); ctx.rotate(deg * Math.PI / 180); ctx.drawImage(l.canvas, -l.canvas.width/2, -l.canvas.height/2); ctx.restore();
       return { ...l, canvas: c };
     });
-    setCanvasSize({ width: w, height: h }); if (canvasRef.current) { canvasRef.current.width = w; canvasRef.current.height = h; }
+    setCanvasSize({ width: w, height: h });
     setLayers(next); saveHistory(next, w, h);
   };
 
@@ -660,7 +651,7 @@ const App: React.FC = () => {
         const c = document.createElement('canvas'); c.width = w; c.height = h;
         c.getContext('2d')?.drawImage(l.canvas, 0, 0, w, h); return { ...l, canvas: c };
     });
-    setCanvasSize({ width: w, height: h }); if (canvasRef.current) { canvasRef.current.width = w; canvasRef.current.height = h; }
+    setCanvasSize({ width: w, height: h });
     setLayers(next); saveHistory(next, w, h); setShowResizeDialog(false);
   };
 
@@ -671,7 +662,7 @@ const App: React.FC = () => {
           const c = document.createElement('canvas'); c.width = w; c.height = h;
           c.getContext('2d')?.drawImage(l.canvas, cropRect.x, cropRect.y, w, h, 0, 0, w, h); return { ...l, canvas: c };
       });
-      setCanvasSize({ width: w, height: h }); if (canvasRef.current) { canvasRef.current.width = w; canvasRef.current.height = h; }
+      setCanvasSize({ width: w, height: h });
       setLayers(next); saveHistory(next, w, h); setIsCropping(false); setCropRect(null);
   };
 
@@ -716,8 +707,6 @@ const App: React.FC = () => {
       <Icon className="w-5 h-5" />
     </button>
   );
-
-  const activeLayer = layers.find(l => l.id === activeLayerId);
 
   return (
     <div className="fixed inset-0 bg-black text-gray-100 flex flex-col font-sans touch-manipulation">
