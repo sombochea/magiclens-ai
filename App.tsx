@@ -7,8 +7,29 @@ import {
   IconSpray, IconMarker, IconEraser, IconBrush, IconUndo, 
   IconRedo, IconCamera, IconX, IconHistory, IconMove,
   IconHand, IconZoomIn, IconZoomOut, IconMinimize, IconMaximize,
-  IconSave, IconRestore
+  IconSave, IconRestore, IconScissors, IconCheck
 } from './components/Icons';
+
+// Magical Processing Overlay
+const ProcessingOverlay = ({ text }: { text: string }) => (
+  <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-md animate-fade-in pointer-events-auto">
+    <div className="flex flex-col items-center gap-6">
+      <div className="relative">
+         <div className="w-24 h-24 rounded-full border-4 border-indigo-500/20 border-t-indigo-500 animate-spin"></div>
+         <div className="absolute inset-0 flex items-center justify-center">
+            <div className="relative">
+               <div className="absolute inset-0 bg-indigo-500 blur-xl opacity-40 animate-pulse"></div>
+               <IconWand className="w-8 h-8 text-indigo-400 relative z-10" />
+            </div>
+         </div>
+      </div>
+      <div className="flex flex-col items-center">
+         <p className="text-white font-bold text-lg tracking-wider uppercase animate-pulse">{text}</p>
+         <p className="text-gray-400 text-xs tracking-widest mt-1">AI Magic in Progress</p>
+      </div>
+    </div>
+  </div>
+);
 
 const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>(AppMode.GENERATE);
@@ -44,6 +65,7 @@ const App: React.FC = () => {
   const [brushColor, setBrushColor] = useState('#FF0055');
   const [brushSize, setBrushSize] = useState(20);
   const [brushType, setBrushType] = useState<'pen' | 'spray' | 'marker' | 'eraser' | 'pan'>('pen');
+  const lastDrawPointRef = useRef<{x: number, y: number} | null>(null);
 
   // Zoom & Pan State
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -367,16 +389,17 @@ const App: React.FC = () => {
       ctx.globalAlpha = 1;
     }
 
-    ctx.beginPath();
-    ctx.moveTo(x, y);
-
     if (brushType === 'spray') {
-      sprayPaint(ctx, x, y, brushColor, brushSize);
-    } else {
-      ctx.lineTo(x, y);
-      ctx.stroke();
       ctx.beginPath();
       ctx.moveTo(x, y);
+      sprayPaint(ctx, x, y, brushColor, brushSize);
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      lastDrawPointRef.current = { x, y };
+      // Draw a single dot
+      ctx.lineTo(x, y);
+      ctx.stroke();
     }
   };
 
@@ -407,10 +430,14 @@ const App: React.FC = () => {
       ctx.beginPath(); 
       ctx.moveTo(x, y);
     } else {
-      ctx.lineTo(x, y);
-      ctx.stroke();
-      ctx.beginPath();
-      ctx.moveTo(x, y);
+      // Smooth Drawing Logic with Quadratic Curves
+      const p1 = lastDrawPointRef.current;
+      if (p1) {
+         const mid = { x: (p1.x + x) / 2, y: (p1.y + y) / 2 };
+         ctx.quadraticCurveTo(p1.x, p1.y, mid.x, mid.y);
+         ctx.stroke();
+         lastDrawPointRef.current = { x, y };
+      }
     }
   };
 
@@ -420,6 +447,7 @@ const App: React.FC = () => {
     }
     if (isDrawing) {
       setIsDrawing(false);
+      lastDrawPointRef.current = null;
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext('2d');
       if (ctx) {
@@ -493,6 +521,35 @@ const App: React.FC = () => {
     }
   };
 
+  const handleRemoveBackground = async () => {
+    if (!canvasRef.current) return;
+    setIsEditing(true);
+    try {
+      const base64Canvas = canvasRef.current.toDataURL('image/png');
+      const results = await editImage(base64Canvas, "Remove the background from this image. Keep the subject isolated and visible.");
+      setEditedImages(results);
+      
+      const newItem: HistoryItem = {
+        id: generateId(),
+        type: 'edited',
+        src: results[0],
+        prompt: "Remove background",
+        timestamp: Date.now()
+      };
+      await saveItem(newItem);
+      loadGallery();
+    } catch (e) {
+      alert("Failed to remove background.");
+    } finally {
+      setIsEditing(false);
+    }
+  };
+
+  const handleApplyResult = (src: string) => {
+    setEditPreview(src); // This triggers the useEffect to redraw canvas with new image
+    setEditedImages([]); // Close overlay
+  };
+
   const handleDeleteHistory = async (id: string) => {
     if (confirm("Delete this image?")) {
       await deleteItem(id);
@@ -501,13 +558,18 @@ const App: React.FC = () => {
   };
 
   // Brush Component
-  const BrushBtn = ({ type, icon: Icon, active, onClick }: any) => (
-    <button
-      onClick={onClick}
-      className={`p-2.5 rounded-lg transition-all flex items-center justify-center ${active ? 'bg-indigo-600 text-white shadow-lg ring-2 ring-indigo-400' : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'}`}
-    >
-      <Icon className="w-5 h-5" />
-    </button>
+  const BrushBtn = ({ type, icon: Icon, active, onClick, label }: any) => (
+    <div className="relative group w-full">
+      <button
+        onClick={onClick}
+        className={`w-full p-2.5 rounded-lg transition-all flex items-center justify-center ${active ? 'bg-indigo-600 text-white shadow-lg ring-2 ring-indigo-400' : 'bg-gray-800 text-gray-400 hover:text-white hover:bg-gray-700'}`}
+      >
+        <Icon className="w-5 h-5" />
+      </button>
+      <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
+        {label}
+      </div>
+    </div>
   );
 
   return (
@@ -607,6 +669,12 @@ const App: React.FC = () => {
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                {/* Generation Placeholder */}
+                {isGenerating && (
+                    <div className="aspect-square rounded-2xl overflow-hidden relative bg-gray-900 border border-gray-800 shadow-2xl flex items-center justify-center">
+                        <ProcessingOverlay text="Dreaming..." />
+                    </div>
+                )}
                 {generatedImages.map((src, idx) => (
                   <div key={idx} className="group relative rounded-2xl overflow-hidden border border-gray-800 shadow-2xl">
                     <img src={src} alt="Generated" className="w-full h-auto object-cover" />
@@ -695,6 +763,9 @@ const App: React.FC = () => {
                         style={{ maxWidth: 'unset' }} // Override max-w-full to allow zoom
                       />
                     </div>
+
+                    {/* Editor Processing Overlay (Scoped to Canvas Container) */}
+                    {isEditing && <ProcessingOverlay text="Weaving Magic..." />}
                     
                     {/* Floating Minimalist Zoom Controls - Right Side */}
                     <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 p-1.5 bg-black/60 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl z-20">
@@ -716,7 +787,7 @@ const App: React.FC = () => {
                       </button>
                     </div>
 
-                    {/* Draggable Brushes Toolbar - Keep Existing Logic */}
+                    {/* Draggable Brushes Toolbar */}
                     <div 
                         ref={toolbarRef}
                         onPointerDown={handleDragStart}
@@ -732,31 +803,68 @@ const App: React.FC = () => {
                               <IconMove className="w-4 h-4 text-gray-500" />
                            </div>
                            <div className="flex items-center gap-1">
-                             <button onClick={saveSession} className="text-gray-400 hover:text-green-400" title="Save Session">
-                                <IconSave className="w-4 h-4" />
-                             </button>
-                             <button onClick={() => setIsToolbarMinimized(!isToolbarMinimized)} className="text-gray-400 hover:text-white">
-                                {isToolbarMinimized ? <IconMaximize className="w-4 h-4"/> : <IconMinimize className="w-4 h-4" />}
-                             </button>
+                             <div className="relative group">
+                               <button onClick={saveSession} className="text-gray-400 hover:text-green-400">
+                                  <IconSave className="w-4 h-4" />
+                               </button>
+                               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                  Save Session
+                               </div>
+                             </div>
+                             <div className="relative group">
+                               <button onClick={() => setIsToolbarMinimized(!isToolbarMinimized)} className="text-gray-400 hover:text-white">
+                                  {isToolbarMinimized ? <IconMaximize className="w-4 h-4"/> : <IconMinimize className="w-4 h-4" />}
+                               </button>
+                               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                  {isToolbarMinimized ? 'Maximize' : 'Minimize'}
+                               </div>
+                             </div>
                            </div>
                         </div>
 
                         {!isToolbarMinimized && (
                           <div onPointerDown={(e) => e.stopPropagation()} className="space-y-4 animate-fade-in">
                             <div className="grid grid-cols-3 gap-2">
-                              <BrushBtn type="pan" icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} />
-                              <BrushBtn type="pen" icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} />
-                              <BrushBtn type="spray" icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} />
-                              <BrushBtn type="marker" icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} />
-                              <BrushBtn type="eraser" icon={IconEraser} active={brushType === 'eraser'} onClick={() => setBrushType('eraser')} />
-                              <button onClick={clearCanvas} className="p-2.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 flex items-center justify-center">
-                                <IconTrash className="w-5 h-5" />
-                              </button>
+                              <BrushBtn type="pan" icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} label="Pan Tool" />
+                              <BrushBtn type="pen" icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} label="Pen Tool" />
+                              <BrushBtn type="spray" icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} label="Spray Paint" />
+                              <BrushBtn type="marker" icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} label="Marker" />
+                              <BrushBtn type="eraser" icon={IconEraser} active={brushType === 'eraser'} onClick={() => setBrushType('eraser')} label="Eraser" />
+                              <div className="relative group w-full">
+                                <button onClick={clearCanvas} className="w-full p-2.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 flex items-center justify-center">
+                                  <IconTrash className="w-5 h-5" />
+                                </button>
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                  Clear Canvas
+                                </div>
+                              </div>
                             </div>
+
+                            {/* Remove Background Tool */}
+                            <button 
+                                onClick={handleRemoveBackground}
+                                title="Isolate subject from background"
+                                className="w-full p-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 rounded-lg flex items-center justify-center gap-2 border border-indigo-500/30 transition-all"
+                            >
+                                <IconScissors className="w-4 h-4" />
+                                <span className="text-xs font-bold">Remove BG</span>
+                            </button>
+
                             <div className="h-px bg-white/10"></div>
+                            
                             <div className="flex justify-between gap-1">
-                               <button onClick={handleUndo} disabled={historyStep <= 0} className="p-2 text-gray-400 hover:text-white disabled:opacity-30"><IconUndo /></button>
-                               <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="p-2 text-gray-400 hover:text-white disabled:opacity-30"><IconRedo /></button>
+                               <div className="relative group flex-1">
+                                 <button onClick={handleUndo} disabled={historyStep <= 0} className="w-full p-2 text-gray-400 hover:text-white disabled:opacity-30 flex justify-center"><IconUndo /></button>
+                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                    Undo
+                                 </div>
+                               </div>
+                               <div className="relative group flex-1">
+                                 <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="w-full p-2 text-gray-400 hover:text-white disabled:opacity-30 flex justify-center"><IconRedo /></button>
+                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                    Redo
+                                 </div>
+                               </div>
                             </div>
                              <div>
                                 <input 
@@ -845,14 +953,23 @@ const App: React.FC = () => {
                            <h2 className="text-xl font-bold mb-4">Magic Result</h2>
                            <div className="grid grid-cols-1 gap-4">
                               {editedImages.map((src, idx) => (
-                                <div key={idx} className="relative rounded-2xl overflow-hidden">
+                                <div key={idx} className="relative rounded-2xl overflow-hidden group">
                                   <img src={src} className="w-full max-h-[60vh] object-contain bg-black" alt="Result"/>
-                                  <button 
-                                    onClick={() => downloadImage(src, `magic-edit-result-${Date.now()}.png`)}
-                                    className="absolute bottom-4 right-4 px-6 py-3 bg-white text-black rounded-full font-bold shadow-lg flex items-center gap-2 hover:scale-105 transition"
-                                  >
-                                    <IconDownload /> Save
-                                  </button>
+                                  
+                                  <div className="absolute bottom-4 right-4 flex gap-2">
+                                     <button 
+                                        onClick={() => handleApplyResult(src)}
+                                        className="px-6 py-3 bg-indigo-600 text-white rounded-full font-bold shadow-lg flex items-center gap-2 hover:bg-indigo-500 transition-colors"
+                                      >
+                                        <IconCheck className="w-4 h-4" /> Apply
+                                      </button>
+                                      <button 
+                                        onClick={() => downloadImage(src, `magic-edit-result-${Date.now()}.png`)}
+                                        className="px-6 py-3 bg-white text-black rounded-full font-bold shadow-lg flex items-center gap-2 hover:bg-gray-200 transition-colors"
+                                      >
+                                        <IconDownload className="w-4 h-4" /> Save
+                                      </button>
+                                  </div>
                                 </div>
                               ))}
                            </div>
