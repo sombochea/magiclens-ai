@@ -10,7 +10,7 @@ import {
   IconSave, IconRestore, IconScissors, IconCheck, IconLayers,
   IconEye, IconEyeOff, IconPlus, IconArrowUp, IconArrowDown, IconImage,
   IconSliders, IconCrop, IconRotateCw, IconRotateCcw, IconScaling,
-  IconFlipCamera, IconChevronDown, IconChevronRight
+  IconFlipCamera, IconChevronDown, IconChevronRight, IconCopy
 } from './components/Icons';
 
 const SUGGESTED_PROMPTS = [
@@ -22,8 +22,8 @@ const SUGGESTED_PROMPTS = [
   "A group of astronauts playing poker on the moon"
 ];
 
-// Reusable Tooltip Component
-const Tooltip = ({ children, text, position = 'bottom', className = '' }: { children?: React.ReactNode, text: string, position?: 'top' | 'bottom' | 'left' | 'right', className?: string }) => {
+// Reusable Tooltip Component - Fixed: Using React.FC to properly handle 'key' and other React props
+const Tooltip: React.FC<{ children?: React.ReactNode, text: string, position?: 'top' | 'bottom' | 'left' | 'right', className?: string }> = ({ children, text, position = 'bottom', className = '' }) => {
   const posClasses = {
     top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
     bottom: 'top-full left-1/2 -translate-x-1/2 mt-2',
@@ -149,7 +149,7 @@ const App: React.FC = () => {
   const [isDrawing, setIsDrawing] = useState(false);
   const [brushColor, setBrushColor] = useState('#FF0055');
   const [brushSize, setBrushSize] = useState(20);
-  const [brushType, setBrushType] = useState<'pen' | 'spray' | 'marker' | 'eraser' | 'pan'>('pen');
+  const [brushType, setBrushType] = useState<'pen' | 'spray' | 'marker' | 'eraser' | 'pan' | 'clone'>('pen');
   const [brushShape, setBrushShape] = useState<'round' | 'square' | 'textured'>('round');
   const [brushJitter, setBrushJitter] = useState(0); 
   const [brushFlow, setBrushFlow] = useState(100); 
@@ -174,6 +174,11 @@ const App: React.FC = () => {
   const [galleryItems, setGalleryItems] = useState<HistoryItem[]>([]);
   const [hasSavedSession, setHasSavedSession] = useState(false);
   const [draggedLayerIndex, setDraggedLayerIndex] = useState<number | null>(null);
+  
+  // Clone Stamp State
+  const [cloneSource, setCloneSource] = useState<{x: number, y: number} | null>(null);
+  const [isSettingCloneSource, setIsSettingCloneSource] = useState(false);
+  const cloneOffsetRef = useRef<{x: number, y: number}>({ x: 0, y: 0 });
 
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null); 
@@ -401,7 +406,16 @@ const App: React.FC = () => {
       setGeneratedImages(prev => [...results, ...prev]);
       await saveItem({ id: Date.now().toString(), type: 'generated', src: results[0], prompt: genPrompt, timestamp: Date.now() });
       loadGallery();
-    } catch (e) { alert("Failed to generate image."); } finally { setIsGenerating(false); }
+    } catch (e: any) { 
+      // Handle the case where the API key might have expired or is invalid
+      if (e.message?.includes("Requested entity was not found.")) {
+        if (typeof window !== 'undefined' && (window as any).aistudio) {
+          await (window as any).aistudio.openSelectKey();
+        }
+      }
+      console.error("Error generating image:", e);
+      alert("Failed to generate image."); 
+    } finally { setIsGenerating(false); }
   };
 
   const initEditorWithImage = (src: string) => {
@@ -477,10 +491,22 @@ const App: React.FC = () => {
         if (!cropRect) {
             setCropRect({ x, y, w: 1, h: 1 });
             setCropHandle('se');
-        } else if (cropHandle) {
-            // Already identified handle via onPointerDown on handle elements
         }
         return;
+    }
+
+    if (brushType === 'clone') {
+        if (isSettingCloneSource) {
+            setCloneSource({ x, y });
+            setIsSettingCloneSource(false);
+            return;
+        }
+        if (!cloneSource) {
+            setCloneSource({ x, y });
+            alert("Clone source set! Now paint to copy pixels.");
+            return;
+        }
+        cloneOffsetRef.current = { x: cloneSource.x - x, y: cloneSource.y - y };
     }
 
     if (brushType === 'pan') {
@@ -510,7 +536,9 @@ const App: React.FC = () => {
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = brushType === 'eraser' ? 'destination-out' : 'source-over';
 
-    if (brushType === 'pen' || brushType === 'eraser' || brushType === 'marker') {
+    if (brushType === 'clone') {
+        paintClone(ctx, points);
+    } else if (brushType === 'pen' || brushType === 'eraser' || brushType === 'marker') {
       ctx.beginPath();
       points.forEach(p => {
         ctx.moveTo(p.x, p.y);
@@ -523,6 +551,30 @@ const App: React.FC = () => {
 
     lastDrawPointRef.current = { x, y };
     needsCompositeRef.current = true;
+  };
+
+  const paintClone = (ctx: CanvasRenderingContext2D, points: {x: number, y: number}[]) => {
+      if (!cloneSource || !canvasRef.current) return;
+      const off = cloneOffsetRef.current;
+      
+      points.forEach(p => {
+          ctx.save();
+          ctx.beginPath();
+          if (brushShape === 'square') {
+              ctx.rect(p.x - brushSize / 2, p.y - brushSize / 2, brushSize, brushSize);
+          } else {
+              ctx.arc(p.x, p.y, brushSize / 2, 0, Math.PI * 2);
+          }
+          ctx.clip();
+          
+          // Draw from the main canvas (composite) to the layer
+          ctx.drawImage(
+              canvasRef.current!, 
+              p.x + off.x - brushSize/2, p.y + off.y - brushSize/2, brushSize, brushSize,
+              p.x - brushSize/2, p.y - brushSize/2, brushSize, brushSize
+          );
+          ctx.restore();
+      });
   };
 
   const sprayPaint = (ctx: CanvasRenderingContext2D, x: number, y: number) => {
@@ -592,7 +644,14 @@ const App: React.FC = () => {
         const points = getSymmetricPoints(x, y);
         const lastPoints = getSymmetricPoints(last.x, last.y);
 
-        if (brushType === 'spray') {
+        if (brushType === 'clone') {
+            const steps = Math.ceil(dist / (brushSize / 4));
+            for (let s = 1; s <= steps; s++) {
+                const lerpX = last.x + (x - last.x) * (s / steps);
+                const lerpY = last.y + (y - last.y) * (s / steps);
+                paintClone(ctx, getSymmetricPoints(lerpX, lerpY));
+            }
+        } else if (brushType === 'spray') {
           points.forEach(p => sprayPaint(ctx, p.x, p.y));
         } else if (brushShape === 'textured' && brushTipCanvasRef.current) {
           const steps = Math.ceil(dist / Math.max(1, brushSize / 8));
@@ -673,7 +732,10 @@ const App: React.FC = () => {
     try {
       const res = await editImage(canvasRef.current.toDataURL('image/png'), editPrompt);
       setEditedImages(res);
-    } catch (e) { alert("Edit failed."); } finally { setIsEditing(false); }
+    } catch (e: any) { 
+      console.error(e);
+      alert("Edit failed."); 
+    } finally { setIsEditing(false); }
   };
 
   const handleRemoveBackground = async () => {
@@ -682,7 +744,10 @@ const App: React.FC = () => {
     try {
       const res = await editImage(canvasRef.current.toDataURL('image/png'), "Remove the background from this image. Keep the subject isolated and visible.");
       setEditedImages(res);
-    } catch (e) { alert("Background removal failed."); } finally { setIsEditing(false); }
+    } catch (e: any) { 
+      console.error(e);
+      alert("Background removal failed."); 
+    } finally { setIsEditing(false); }
   };
 
   const handleApplyResult = (src: string) => {
@@ -765,14 +830,19 @@ const App: React.FC = () => {
   };
   
   const handleDragStart = (e: React.PointerEvent) => {
+    // Only start drag if not on interactive elements
+    if ((e.target as HTMLElement).closest('button, input, [role="button"], label')) return;
+    
     setIsDraggingToolbar(true);
     dragStartRef.current = { x: e.clientX - toolbarPos.x, y: e.clientY - toolbarPos.y };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
+  
   const handleDragMove = (e: React.PointerEvent) => {
     if (!isDraggingToolbar) return;
     setToolbarPos({ x: e.clientX - dragStartRef.current.x, y: e.clientY - dragStartRef.current.y });
   };
+  
   const handleDragEnd = (e: React.PointerEvent) => {
     if (!isDraggingToolbar) return;
     setIsDraggingToolbar(false);
@@ -822,8 +892,8 @@ const App: React.FC = () => {
           <div className="relative flex-1 bg-black overflow-hidden">
              <video ref={videoRef} className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`} autoPlay playsInline muted />
              <div className="absolute top-6 left-6 right-6 flex justify-between">
-               <button onClick={() => setShowCamera(false)} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white hover:bg-white/20 transition-all"><IconX className="w-6 h-6" /></button>
-               <button onClick={toggleCameraFacing} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white hover:bg-white/20 transition-all"><IconFlipCamera className="w-6 h-6" /></button>
+               <button onClick={() => setShowCamera(false)} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white hover:bg-white/20 transition-all flex items-center justify-center"><IconX className="w-6 h-6" /></button>
+               <button onClick={toggleCameraFacing} className="p-3 bg-white/10 backdrop-blur-md rounded-full text-white hover:bg-white/20 transition-all flex items-center justify-center"><IconFlipCamera className="w-6 h-6" /></button>
              </div>
              <div className="absolute bottom-12 left-0 right-0 flex justify-center">
                 <button onClick={capturePhoto} className="w-24 h-24 rounded-full border-4 border-white flex items-center justify-center active:scale-90 transition-all shadow-2xl"><div className="w-20 h-20 bg-white rounded-full"></div></button>
@@ -834,13 +904,13 @@ const App: React.FC = () => {
 
       {showResizeDialog && (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur flex items-center justify-center p-4">
-              <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm">
+              <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
                   <h3 className="text-lg font-bold mb-4 text-white">Resize Image</h3>
                   <div className="grid grid-cols-2 gap-4 mb-4">
                       <div><label className="text-xs text-gray-400 uppercase">Width</label><input type="number" value={resizeWidth} onChange={e => { const v = parseInt(e.target.value)||0; setResizeWidth(v); if(keepAspect) setResizeHeight(Math.round(v*(canvasSize.height/canvasSize.width))); }} className="w-full bg-gray-800 rounded p-2 text-white border border-gray-700"/></div>
                       <div><label className="text-xs text-gray-400 uppercase">Height</label><input type="number" value={resizeHeight} onChange={e => { const v = parseInt(e.target.value)||0; setResizeHeight(v); if(keepAspect) setResizeWidth(Math.round(v*(canvasSize.width/canvasSize.height))); }} className="w-full bg-gray-800 rounded p-2 text-white border border-gray-700"/></div>
                   </div>
-                  <div className="flex gap-2"><button onClick={() => setShowResizeDialog(false)} className="flex-1 py-3 bg-gray-800 rounded-xl font-bold">Cancel</button><button onClick={applyResize} className="flex-1 py-3 bg-indigo-600 rounded-xl font-bold">Apply</button></div>
+                  <div className="flex gap-2"><button onClick={() => setShowResizeDialog(false)} className="flex-1 py-3 bg-gray-800 rounded-xl font-bold flex items-center justify-center hover:bg-gray-700 transition-all">Cancel</button><button onClick={applyResize} className="flex-1 py-3 bg-indigo-600 rounded-xl font-bold flex items-center justify-center hover:bg-indigo-500 transition-all">Apply</button></div>
               </div>
           </div>
       )}
@@ -930,7 +1000,7 @@ const App: React.FC = () => {
                         <div key={i} className="group relative rounded-[40px] overflow-hidden border border-white/5 shadow-[0_20px_50px_rgba(0,0,0,0.4)] bg-gray-900 transition-all hover:scale-[1.02]">
                           <img src={src} className="w-full h-auto object-cover" alt="AI Generated Output"/>
                           <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-4 transition-all duration-300">
-                             <button onClick={() => downloadImage(src, `magic-${Date.now()}.png`)} className="px-8 py-4 bg-white text-black rounded-[24px] font-black uppercase text-[10px] tracking-widest flex items-center gap-2 hover:scale-110 active:scale-95 transition-all">
+                             <button onClick={() => downloadImage(src, `magic-${Date.now()}.png`)} className="px-8 py-4 bg-white text-black rounded-[24px] font-black uppercase text-[10px] tracking-widest flex items-center gap-2 hover:scale-110 active:scale-95 transition-all flex items-center justify-center">
                                <IconDownload className="w-4 h-4" /> Save Asset
                              </button>
                           </div>
@@ -972,6 +1042,16 @@ const App: React.FC = () => {
                     <div style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.scale})`, transformOrigin: 'center center', transition: isPanning ? 'none' : 'transform 0.1s ease-out' }}>
                        <div className="relative" style={{ width: canvasSize.width, height: canvasSize.height }}>
                            <canvas ref={canvasRef} onMouseDown={handlePointerDown} onMouseMove={handlePointerMove} onMouseUp={handlePointerUp} onMouseLeave={handlePointerUp} onTouchStart={handlePointerDown} onTouchMove={handlePointerMove} onTouchEnd={handlePointerUp} className="shadow-2xl border border-gray-800 bg-black absolute inset-0" />
+                          
+                          {/* Clone Source Marker */}
+                          {brushType === 'clone' && cloneSource && (
+                            <div className="absolute pointer-events-none w-8 h-8 -translate-x-1/2 -translate-y-1/2 flex items-center justify-center" style={{ left: cloneSource.x, top: cloneSource.y }}>
+                                <div className="w-4 h-4 rounded-full border-2 border-white shadow-lg animate-ping absolute opacity-50"></div>
+                                <div className="w-1 h-4 bg-white rounded-full absolute rotate-45"></div>
+                                <div className="w-1 h-4 bg-white rounded-full absolute -rotate-45"></div>
+                            </div>
+                          )}
+
                           {isCropping && cropRect && (
                               <div className="absolute inset-0 z-50 overflow-hidden pointer-events-none">
                                   {/* Dimmer segments */}
@@ -998,7 +1078,7 @@ const App: React.FC = () => {
                     <div className="absolute right-6 top-1/2 -translate-y-1/2 flex flex-col gap-2 p-2 bg-black/60 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl z-20">
                       <Tooltip text="Zoom In" position="left"><button onClick={handleZoomIn} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors"><IconZoomIn className="w-5 h-5"/></button></Tooltip>
                       <Tooltip text="Zoom Out" position="left"><button onClick={handleZoomOut} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors"><IconZoomOut className="w-5 h-5"/></button></Tooltip>
-                      <Tooltip text="Reset Zoom" position="left"><button onClick={handleResetZoom} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-indigo-400 border-t border-white/5 mt-2"><div className="w-1.5 h-1.5 rounded-full bg-current"/></button></Tooltip>
+                      <Tooltip text="Reset Zoom" position="left"><button onClick={handleResetZoom} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-indigo-400 border-t border-white/5 mt-2 flex items-center justify-center"><div className="w-1.5 h-1.5 rounded-full bg-current"/></button></Tooltip>
                     </div>
                     
                     <div className={`absolute right-6 top-6 z-30 transition-all ${showLayerPanel ? 'w-80' : 'w-auto'}`}>
@@ -1065,8 +1145,8 @@ const App: React.FC = () => {
                         )}
                     </div>
 
-                    <div ref={toolbarRef} onPointerDown={handleDragStart} onPointerMove={handleDragMove} onPointerUp={handlePointerUp} onPointerCancel={handlePointerUp} style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }} className={`absolute left-6 top-6 w-auto bg-black/90 backdrop-blur-xl rounded-[32px] border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing z-30 transition-all ${isToolbarMinimized ? 'p-2' : 'p-4'}`}>
-                        <div className="flex justify-between items-center gap-4" onPointerDown={e => e.stopPropagation()}>
+                    <div ref={toolbarRef} onPointerDown={handleDragStart} onPointerMove={handleDragMove} onPointerUp={handleDragEnd} onPointerCancel={handleDragEnd} style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }} className={`absolute right-96 top-6 w-72 bg-black/90 backdrop-blur-xl rounded-[32px] border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing z-30 overflow-hidden ${isToolbarMinimized ? 'p-2' : 'p-4'}`}>
+                        <div className="flex justify-between items-center gap-4 shrink-0" onPointerDown={e => e.stopPropagation()}>
                            <div className="p-1 opacity-40 flex items-center justify-center" onPointerDown={handleDragStart}><IconMove className="w-4 h-4 text-gray-400" /></div>
                            <div className="flex gap-2">
                              <Tooltip text="Save Project" position="top"><button onClick={saveSession} className="text-gray-500 hover:text-emerald-400 transition-colors flex items-center justify-center"><IconSave className="w-4 h-4" /></button></Tooltip>
@@ -1074,7 +1154,7 @@ const App: React.FC = () => {
                            </div>
                         </div>
                         {!isToolbarMinimized && (
-                          <div onPointerDown={e => e.stopPropagation()} className="space-y-4 w-64 animate-fade-in custom-scrollbar overflow-y-auto max-h-[80vh]">
+                          <div onPointerDown={e => e.stopPropagation()} className="space-y-4 w-full animate-fade-in custom-scrollbar overflow-y-auto overflow-x-hidden max-h-[70vh] pr-1">
                             <div className="grid grid-cols-4 gap-2">
                               <BrushBtn icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} tooltip="Pan Tool (Spacebar)"/>
                               <BrushBtn icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} tooltip="Brush Tool (B)"/>
@@ -1094,17 +1174,26 @@ const App: React.FC = () => {
                             <div className="grid grid-cols-4 gap-2">
                                 <BrushBtn icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} tooltip="Spray Paint"/>
                                 <BrushBtn icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} tooltip="Highlighter / Marker"/>
-                                <Tooltip text="Clear Active Layer" position="top"><button onClick={handleClearLayer} className="w-10 h-10 flex items-center justify-center rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"><IconTrash className="w-5 h-5"/></button></Tooltip>
-                                <Tooltip text="Brush Dynamics" position="top"><button onClick={() => setShowBrushSettings(!showBrushSettings)} className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showBrushSettings ? 'bg-indigo-600 text-white' : 'bg-gray-800/60 text-gray-400'}`}><IconSliders className="w-5 h-5"/></button></Tooltip>
+                                <BrushBtn icon={IconCopy} active={brushType === 'clone'} onClick={() => setBrushType('clone')} tooltip="Clone Stamp Tool"/>
+                                <Tooltip text="Brush Settings" position="top"><button onClick={() => setShowBrushSettings(!showBrushSettings)} className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showBrushSettings ? 'bg-indigo-600 text-white' : 'bg-gray-800/60 text-gray-400'}`}><IconSliders className="w-5 h-5"/></button></Tooltip>
                             </div>
+
+                            {brushType === 'clone' && (
+                                <button 
+                                    onClick={() => setIsSettingCloneSource(true)} 
+                                    className={`w-full py-3 rounded-2xl font-black uppercase text-[9px] tracking-widest transition-all ${isSettingCloneSource ? 'bg-emerald-600 text-white animate-pulse shadow-[0_0_15px_rgba(16,185,129,0.4)]' : 'bg-white/5 text-emerald-400 hover:bg-white/10'}`}
+                                >
+                                    {isSettingCloneSource ? 'Click image to set source' : 'Set Clone Source'}
+                                </button>
+                            )}
                             
-                            <div className="space-y-2">
+                            <div className="space-y-2 px-1">
                                 <div className="flex justify-between px-0.5"><span className="text-[9px] font-black uppercase text-gray-500">Brush Size</span><span className="text-[10px] font-bold text-indigo-400">{brushSize}px</span></div>
                                 <input type="range" min="2" max="150" value={brushSize} onChange={e => setBrushSize(parseInt(e.target.value))} className="w-full h-1 bg-gray-800 rounded appearance-none cursor-pointer accent-indigo-500"/>
                             </div>
                             
                             {showBrushSettings && (
-                                <div className="space-y-2 animate-fade-in">
+                                <div className="space-y-2 animate-fade-in pr-1">
                                     <div className="rounded-2xl border border-white/5 overflow-hidden">
                                         <button onClick={() => toggleSection('shape')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Brush Shape{collapsedSections.shape ? <IconChevronRight className="w-3 h-3"/> : <IconChevronDown className="w-3 h-3"/>}</button>
                                         {!collapsedSections.shape && <div className="p-3 bg-black/20 flex gap-1 bg-gray-900/50 p-1 rounded-xl m-2">{['round', 'square', 'textured'].map(s => <button key={s} onClick={() => setBrushShape(s as any)} className={`flex-1 py-1.5 text-[9px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${brushShape === s ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'}`}>{s}</button>)}</div>}
@@ -1114,18 +1203,16 @@ const App: React.FC = () => {
                                         {!collapsedSections.symmetry && (
                                             <div className="p-3 bg-black/20 space-y-4">
                                                 <div className="grid grid-cols-2 gap-1 bg-gray-900/50 p-1 rounded-xl">
-                                                    <Tooltip text="No mirroring" position="top">
-                                                      <button onClick={() => setSymmetry('none')} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === 'none' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>none</button>
-                                                    </Tooltip>
-                                                    <Tooltip text="Mirror drawing along the vertical center axis" position="top">
-                                                      <button onClick={() => setSymmetry('vertical')} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === 'vertical' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>vertical</button>
-                                                    </Tooltip>
-                                                    <Tooltip text="Mirror drawing along the horizontal center axis" position="top">
-                                                      <button onClick={() => setSymmetry('horizontal')} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === 'horizontal' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>horizontal</button>
-                                                    </Tooltip>
-                                                    <Tooltip text="Repeat drawing in multiple slices around the center point" position="top">
-                                                      <button onClick={() => setSymmetry('radial')} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === 'radial' ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>radial</button>
-                                                    </Tooltip>
+                                                    {[
+                                                      {v:'none', d:'Normal brush strokes with no mirroring'},
+                                                      {v:'vertical', d:'Mirrors strokes across a vertical center line'},
+                                                      {v:'horizontal', d:'Mirrors strokes across a horizontal center line'},
+                                                      {v:'radial', d:'Repeats strokes in a circular pattern around the center'}
+                                                    ].map(item => (
+                                                      <Tooltip key={item.v} text={item.d} position="top" className="w-full">
+                                                        <button onClick={() => setSymmetry(item.v as any)} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === item.v ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>{item.v}</button>
+                                                      </Tooltip>
+                                                    ))}
                                                 </div>
                                                 {symmetry === 'radial' && (
                                                     <div className="space-y-1">
@@ -1147,9 +1234,14 @@ const App: React.FC = () => {
                                 </div>
                             )}
                             
-                            <Tooltip text="Automatically segment and remove background" position="top">
-                              <button onClick={handleRemoveBackground} className="w-full p-4 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 rounded-[22px] flex items-center justify-center gap-2 border border-indigo-500/20 transition-all active:scale-95 group font-black text-[10px] uppercase tracking-widest flex items-center justify-center"><IconScissors className="w-4 h-4 group-hover:rotate-12 transition-transform" /> Auto Remove BG</button>
-                            </Tooltip>
+                            <div className="flex gap-2">
+                                <Tooltip text="Flush Current Layer" position="top" className="flex-1">
+                                    <button onClick={handleClearLayer} className="w-full py-4 flex items-center justify-center rounded-2xl bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"><IconTrash className="w-5 h-5"/></button>
+                                </Tooltip>
+                                <Tooltip text="Automatically segment and remove background" position="top" className="flex-[3]">
+                                    <button onClick={handleRemoveBackground} className="w-full py-4 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 rounded-2xl flex items-center justify-center gap-2 border border-indigo-500/20 transition-all active:scale-95 group font-black text-[10px] uppercase tracking-widest"><IconScissors className="w-4 h-4 group-hover:rotate-12 transition-transform" /> Remove BG</button>
+                                </Tooltip>
+                            </div>
                             
                             <div className="flex gap-3">
                               <Tooltip text="Undo (Ctrl+Z)" position="top" className="flex-1">
