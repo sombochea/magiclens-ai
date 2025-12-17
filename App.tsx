@@ -149,6 +149,7 @@ const App: React.FC = () => {
   const [isToolbarMinimized, setIsToolbarMinimized] = useState(false);
   const [galleryItems, setGalleryItems] = useState<HistoryItem[]>([]);
   const [hasSavedSession, setHasSavedSession] = useState(false);
+  const [draggedLayerIndex, setDraggedLayerIndex] = useState<number | null>(null);
 
   // Refs
   const canvasRef = useRef<HTMLCanvasElement>(null); 
@@ -320,6 +321,16 @@ const App: React.FC = () => {
     setLayers(next);
     setActiveLayerId(l.id);
     saveHistory(next);
+  };
+
+  const handleLayerDrop = (targetIndex: number) => {
+    if (draggedLayerIndex === null) return;
+    const newLayers = [...layers];
+    const [removed] = newLayers.splice(draggedLayerIndex, 1);
+    newLayers.splice(targetIndex, 0, removed);
+    setLayers(newLayers);
+    setDraggedLayerIndex(null);
+    saveHistory(newLayers);
   };
 
   const openResizeDialog = () => {
@@ -881,7 +892,19 @@ const App: React.FC = () => {
                                 <div className="p-5 border-b border-white/10 flex justify-between items-center"><h3 className="text-[10px] font-black uppercase tracking-widest text-gray-400">Layers</h3><button onClick={() => setShowLayerPanel(false)} className="text-gray-500 hover:text-white"><IconX className="w-4 h-4"/></button></div>
                                 <div className="overflow-y-auto flex-col-reverse flex p-4 gap-3">
                                     {layers.map((l, i) => (
-                                        <div key={l.id} onClick={() => setActiveLayerId(l.id)} className={`p-3 rounded-2xl flex items-center gap-4 cursor-pointer border transition-all ${activeLayerId === l.id ? 'bg-indigo-600/10 border-indigo-500/40 shadow-xl' : 'bg-gray-900/40 border-transparent hover:bg-white/5'}`}>
+                                        <div 
+                                          key={l.id} 
+                                          draggable
+                                          onDragStart={() => setDraggedLayerIndex(i)}
+                                          onDragOver={(e) => e.preventDefault()}
+                                          onDrop={() => handleLayerDrop(i)}
+                                          onDragEnd={() => setDraggedLayerIndex(null)}
+                                          onClick={() => setActiveLayerId(l.id)} 
+                                          className={`p-3 rounded-2xl flex items-center gap-4 cursor-pointer border transition-all ${activeLayerId === l.id ? 'bg-indigo-600/10 border-indigo-500/40 shadow-xl' : 'bg-gray-900/40 border-transparent hover:bg-white/5'} ${draggedLayerIndex === i ? 'opacity-40 scale-95 border-indigo-500/50' : ''}`}
+                                        >
+                                            <div className="p-1 text-gray-600 hover:text-gray-400 cursor-grab active:cursor-grabbing">
+                                                <IconMove className="w-4 h-4" />
+                                            </div>
                                             <button onClick={e => { e.stopPropagation(); handleToggleVisibility(l.id); }} className={`p-1 transition-colors ${l.visible ? 'text-indigo-400' : 'text-gray-700'}`}>{l.visible ? <IconEye className="w-4 h-4"/> : <IconEyeOff className="w-4 h-4" />}</button>
                                             <LayerThumbnail layer={l}/>
                                             <div className="flex-1 min-w-0"><p className="text-xs font-black truncate text-gray-200">{l.name}</p><p className="text-[8px] font-black uppercase text-gray-600 tracking-tighter">{l.blendMode}</p></div>
