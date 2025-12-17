@@ -1,4 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
+
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { AppMode, AspectRatio, ImageResolution, HistoryItem, Layer, LayerSnapshot, HistoryState } from './types';
 import { generateImage, editImage } from './services/geminiService';
 import { initDB, saveItem, getItems, deleteItem } from './services/storageService';
@@ -32,6 +33,21 @@ const ProcessingOverlay = ({ text }: { text: string }) => (
     </div>
   </div>
 );
+
+// Helper function to create a new layer
+const createLayer = (name: string, width: number, height: number): Layer => {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  return {
+    id: Math.random().toString(36).substring(2, 11),
+    name,
+    visible: true,
+    opacity: 1,
+    blendMode: 'source-over',
+    canvas,
+  };
+};
 
 const BLEND_MODES: { value: GlobalCompositeOperation; label: string }[] = [
   { value: 'source-over', label: 'Normal' },
@@ -71,7 +87,7 @@ const LayerThumbnail = ({ layer }: { layer: Layer }) => {
             // Draw the source canvas scaled down
             ctx.drawImage(layer.canvas, 0, 0, canvas.width, canvas.height);
         }
-    }); // Update on every render
+    }); 
 
     return <canvas ref={canvasRef} width={40} height={40} className="w-8 h-8 rounded border border-white/10 bg-gray-800 object-cover flex-shrink-0" />;
 };
@@ -95,18 +111,18 @@ const App: React.FC = () => {
   const [layers, setLayers] = useState<Layer[]>([]);
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
   const [showLayerPanel, setShowLayerPanel] = useState(false);
-  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 }); // Workspace size
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 }); 
   
   // Layer Blend Preview
   const [previewBlendMode, setPreviewBlendMode] = useState<GlobalCompositeOperation | null>(null);
   const [showBlendMenu, setShowBlendMenu] = useState(false);
 
-  const canvasRef = useRef<HTMLCanvasElement>(null); // Main composite canvas
+  const canvasRef = useRef<HTMLCanvasElement>(null); 
   const containerRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null); // For adding image layers
-  const replaceInputRef = useRef<HTMLInputElement>(null); // For replacing layer content
+  const fileInputRef = useRef<HTMLInputElement>(null); 
+  const replaceInputRef = useRef<HTMLInputElement>(null); 
   
-  // Undo/Redo History (Snapshot of all layers + canvas size)
+  // Undo/Redo History
   const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyStep, setHistoryStep] = useState<number>(-1);
 
@@ -120,16 +136,19 @@ const App: React.FC = () => {
   const [brushColor, setBrushColor] = useState('#FF0055');
   const [brushSize, setBrushSize] = useState(20);
   const [brushType, setBrushType] = useState<'pen' | 'spray' | 'marker' | 'eraser' | 'pan'>('pen');
-  const [brushJitter, setBrushJitter] = useState(0); // 0-50
-  const [brushFlow, setBrushFlow] = useState(100); // 1-100
-  const [brushFalloff, setBrushFalloff] = useState(0); // 0-100
+  const [brushShape, setBrushShape] = useState<'round' | 'square' | 'textured'>('round');
+  const [brushJitter, setBrushJitter] = useState(0); 
+  const [brushFlow, setBrushFlow] = useState(100); 
+  const [brushFalloff, setBrushFalloff] = useState(0); 
   const [showBrushSettings, setShowBrushSettings] = useState(false);
+
+  // Texture Cache
+  const brushTipCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   // Transform Tools State
   const [isCropping, setIsCropping] = useState(false);
   const [cropRect, setCropRect] = useState<{x:number, y:number, w:number, h:number} | null>(null);
-  // Crop Interaction State
-  const [cropInteraction, setCropInteraction] = useState<string | null>(null); // 'create' | 'move' | 'nw' | 'ne' | 'sw' | 'se'
+  const [cropInteraction, setCropInteraction] = useState<string | null>(null);
   const cropStartRef = useRef<{x: number, y: number, rect: {x:number, y:number, w:number, h:number}}>({x:0,y:0, rect:{x:0,y:0,w:0,h:0}});
 
   const [showResizeDialog, setShowResizeDialog] = useState(false);
@@ -141,6 +160,10 @@ const App: React.FC = () => {
 
   const lastDrawPointRef = useRef<{x: number, y: number} | null>(null);
   const strokeDistanceRef = useRef(0);
+
+  // Performance Optimization Refs
+  const rafIdRef = useRef<number | null>(null);
+  const needsCompositeRef = useRef<boolean>(false);
 
   // Zoom & Pan State
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -179,7 +202,6 @@ const App: React.FC = () => {
 
   const generateId = () => Date.now().toString(36) + Math.random().toString(36).substr(2);
 
-  // Download Helper
   const downloadImage = (src: string, filename: string) => {
     const link = document.createElement('a');
     link.href = src;
@@ -189,23 +211,34 @@ const App: React.FC = () => {
     document.body.removeChild(link);
   };
 
-  // --- Helpers: Layer Management ---
+  // --- Optimization: Textured Brush Tip Cache ---
+  useEffect(() => {
+    if (brushShape === 'textured') {
+      const size = Math.max(1, brushSize);
+      const canvas = document.createElement('canvas');
+      canvas.width = size * 2;
+      canvas.height = size * 2;
+      const ctx = canvas.getContext('2d');
+      if (ctx) {
+        const radius = size / 2;
+        const density = Math.max(10, size * 2);
+        const center = size;
+        ctx.fillStyle = brushColor;
+        for (let i = 0; i < density; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const r = Math.sqrt(Math.random()) * radius;
+            const dx = Math.cos(angle) * r;
+            const dy = Math.sin(angle) * r;
+            ctx.globalAlpha = Math.random(); 
+            ctx.fillRect(center + dx, center + dy, 1, 1); 
+        }
+      }
+      brushTipCanvasRef.current = canvas;
+    }
+  }, [brushShape, brushSize, brushColor]);
 
-  const createLayer = (name: string, width: number, height: number): Layer => {
-    const canvas = document.createElement('canvas');
-    canvas.width = width;
-    canvas.height = height;
-    return {
-      id: generateId(),
-      name,
-      visible: true,
-      opacity: 1,
-      blendMode: 'source-over',
-      canvas
-    };
-  };
-
-  const renderCompositeCanvas = () => {
+  // --- Optimization: Throttled Composite Rendering ---
+  const renderCompositeCanvas = useCallback(() => {
     const mainCanvas = canvasRef.current;
     if (!mainCanvas) return;
     const ctx = mainCanvas.getContext('2d');
@@ -230,14 +263,27 @@ const App: React.FC = () => {
     });
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
-  };
+    needsCompositeRef.current = false;
+  }, [layers, activeLayerId, previewBlendMode]);
 
-  // Re-render whenever layers change or blend preview changes
   useEffect(() => {
-    renderCompositeCanvas();
+    const loop = () => {
+      if (needsCompositeRef.current) {
+        renderCompositeCanvas();
+      }
+      rafIdRef.current = requestAnimationFrame(loop);
+    };
+    rafIdRef.current = requestAnimationFrame(loop);
+    return () => {
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+    };
+  }, [renderCompositeCanvas]);
+
+  // Trigger composite when layers array or UI state changes
+  useEffect(() => {
+    needsCompositeRef.current = true;
   }, [layers, canvasSize, previewBlendMode, activeLayerId]);
 
-  // Reset blend menu when active layer changes
   useEffect(() => {
     setShowBlendMenu(false);
     setPreviewBlendMode(null);
@@ -406,7 +452,7 @@ const App: React.FC = () => {
                         }
                         ctx?.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
                         setLayers(currentLayers);
-                        renderCompositeCanvas();
+                        needsCompositeRef.current = true;
                         saveHistory(currentLayers);
                      }
                  }
@@ -429,6 +475,7 @@ const App: React.FC = () => {
         brushColor,
         brushSize,
         brushType,
+        brushShape,
         brushJitter,
         brushFlow,
         brushFalloff,
@@ -452,6 +499,7 @@ const App: React.FC = () => {
         setBrushColor(session.brushColor || '#FF0055');
         setBrushSize(session.brushSize || 20);
         setBrushType(session.brushType || 'pen');
+        setBrushShape(session.brushShape || 'round');
         setBrushJitter(session.brushJitter || 0);
         setBrushFlow(session.brushFlow || 100);
         setBrushFalloff(session.brushFalloff || 0);
@@ -651,9 +699,6 @@ const App: React.FC = () => {
   const handleWheel = (e: React.WheelEvent) => {
     if (layers.length === 0 || !canvasRef.current || !containerRef.current) return;
     
-    // Check if user is using a trackpad pinch gesture (ctrl key often set for this on browsers)
-    // For normal mouse wheel, e.ctrlKey might be true on some systems for pinch
-    
     const scaleAmount = -e.deltaY * 0.0015;
     const newScale = Math.min(Math.max(0.1, transform.scale * (1 + scaleAmount)), 20);
 
@@ -710,17 +755,23 @@ const App: React.FC = () => {
     ctx.globalAlpha = 1.0; 
   };
 
+  const drawTexturedPoint = (ctx: CanvasRenderingContext2D, x: number, y: number, alpha: number) => {
+    if (!brushTipCanvasRef.current) return;
+    const size = brushSize;
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(brushTipCanvasRef.current, x - size, y - size);
+    ctx.globalAlpha = 1.0;
+  };
+
   const getDistance = (t1: React.Touch, t2: React.Touch) => Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
   const getCenter = (t1: React.Touch, t2: React.Touch) => ({ x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 });
 
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
     if (isDraggingToolbar) return;
 
-    // 1. Multi-touch (Pinch Zoom)
     if ('touches' in e && e.touches.length === 2) {
        const dist = getDistance(e.touches[0], e.touches[1]);
        const center = getCenter(e.touches[0], e.touches[1]);
-       // Capture current container state relative to screen
        const rect = containerRef.current?.getBoundingClientRect();
        if (rect) {
           pinchRef.current = {
@@ -737,13 +788,11 @@ const App: React.FC = () => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    // 2. Crop Interaction
     if (isCropping) {
         const { x, y } = getCanvasPoint(e, canvas);
-        const handleSize = 30 / transform.scale; // Visual size in canvas units
+        const handleSize = 30 / transform.scale; 
         
         if (cropRect) {
-            // Check corners
             const corners = [
                 { id: 'nw', cx: cropRect.x, cy: cropRect.y },
                 { id: 'ne', cx: cropRect.x + cropRect.w, cy: cropRect.y },
@@ -762,12 +811,10 @@ const App: React.FC = () => {
             }
 
             if (!hit) {
-                // Check inside
                 if (x >= cropRect.x && x <= cropRect.x + cropRect.w && y >= cropRect.y && y <= cropRect.y + cropRect.h) {
                     setCropInteraction('move');
                     cropStartRef.current = { x, y, rect: { ...cropRect } };
                 } else {
-                    // Click outside -> Start new crop
                      setCropInteraction('create');
                      setCropRect({ x, y, w: 0, h: 0 });
                      cropStartRef.current = { x, y, rect: { x, y, w:0, h:0 } };
@@ -781,7 +828,6 @@ const App: React.FC = () => {
         return;
     }
 
-    // 3. Pan Tool
     if (brushType === 'pan') {
       setIsPanning(true);
       const clientX = ('touches' in e) ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
@@ -790,7 +836,6 @@ const App: React.FC = () => {
       return;
     }
 
-    // 4. Drawing
     if (!activeLayerId) {
         alert("Please select a layer to draw on.");
         return;
@@ -812,8 +857,8 @@ const App: React.FC = () => {
     }
 
     ctx.lineWidth = brushSize;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
+    ctx.lineCap = brushShape === 'square' ? 'square' : 'round';
+    ctx.lineJoin = brushShape === 'square' ? 'bevel' : 'round';
     ctx.strokeStyle = brushColor;
     ctx.fillStyle = brushColor;
 
@@ -834,6 +879,9 @@ const App: React.FC = () => {
       ctx.beginPath();
       ctx.moveTo(x, y);
       sprayPaint(ctx, x, y, brushColor, brushSize, brushFlow);
+    } else if (brushShape === 'textured') {
+         drawTexturedPoint(ctx, x, y, alpha);
+         lastDrawPointRef.current = { x, y };
     } else {
       ctx.beginPath();
       ctx.moveTo(x, y);
@@ -841,11 +889,10 @@ const App: React.FC = () => {
       ctx.lineTo(x, y);
       ctx.stroke();
     }
-    renderCompositeCanvas();
+    needsCompositeRef.current = true;
   };
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
-    // 1. Multi-touch (Pinch Zoom)
     if (pinchRef.current && 'touches' in e && e.touches.length === 2) {
        e.preventDefault();
        const dist = getDistance(e.touches[0], e.touches[1]);
@@ -854,11 +901,9 @@ const App: React.FC = () => {
        const scaleFactor = dist / pinchRef.current.dist;
        const newScale = Math.min(Math.max(0.1, pinchRef.current.startScale * scaleFactor), 20);
 
-       // Simple Pan adjustment based on center movement
        const dx = center.x - pinchRef.current.center.x;
        const dy = center.y - pinchRef.current.center.y;
        
-       // Refined: Pan should effectively pivot around the pinch center, but direct pan is intuitive.
        setTransform(prev => ({
            scale: newScale,
            x: prev.x + dx,
@@ -866,12 +911,11 @@ const App: React.FC = () => {
        }));
 
        pinchRef.current.center = center;
-       pinchRef.current.dist = dist; // Continuous update prevents jumpiness
-       pinchRef.current.startScale = newScale; // Base next frame on this frame
+       pinchRef.current.dist = dist; 
+       pinchRef.current.startScale = newScale; 
        return;
     }
 
-    // 2. Crop Interaction
     if (isCropping && cropInteraction && cropRect) {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -906,7 +950,6 @@ const App: React.FC = () => {
             newRect.h -= dy;
         }
 
-        // Normalize negative width/height
         let finalX = newRect.x;
         let finalY = newRect.y;
         let finalW = newRect.w;
@@ -925,7 +968,6 @@ const App: React.FC = () => {
         return;
     }
 
-    // 3. Pan
     if (isPanning) {
       e.preventDefault(); 
       const clientX = ('touches' in e) ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
@@ -938,7 +980,6 @@ const App: React.FC = () => {
       return;
     }
 
-    // 4. Draw
     if (!isDrawing) return;
     
     const activeLayer = layers.find(l => l.id === activeLayerId);
@@ -973,22 +1014,39 @@ const App: React.FC = () => {
     }
     
     ctx.globalAlpha = alpha;
-    if (brushType === 'eraser') ctx.globalAlpha = alpha; 
 
     if (brushType === 'spray') {
       sprayPaint(ctx, x, y, brushColor, brushSize, brushFlow);
       ctx.beginPath(); 
       ctx.moveTo(x, y);
+    } else if (brushShape === 'textured') {
+         if (lastDrawPointRef.current) {
+            const last = lastDrawPointRef.current;
+            const dist = Math.hypot(x - last.x, y - last.y);
+            const angle = Math.atan2(y - last.y, x - last.x);
+            // Smaller step for textured stroke feel
+            const step = Math.max(1, brushSize / 8); 
+            
+            for (let i = 0; i < dist; i += step) {
+                 const px = last.x + Math.cos(angle) * i;
+                 const py = last.y + Math.sin(angle) * i;
+                 drawTexturedPoint(ctx, px, py, alpha);
+            }
+         }
+         lastDrawPointRef.current = { x, y };
     } else {
       const p1 = lastDrawPointRef.current;
       if (p1) {
+         ctx.lineCap = brushShape === 'square' ? 'square' : 'round';
+         ctx.lineJoin = brushShape === 'square' ? 'bevel' : 'round';
+         
          const mid = { x: (p1.x + x) / 2, y: (p1.y + y) / 2 };
          ctx.quadraticCurveTo(p1.x, p1.y, mid.x, mid.y);
          ctx.stroke();
          lastDrawPointRef.current = { x, y };
       }
     }
-    renderCompositeCanvas();
+    needsCompositeRef.current = true;
   };
 
   const handlePointerUp = () => {
@@ -1019,7 +1077,6 @@ const App: React.FC = () => {
   // --- Transformation Logic ---
 
   const handleRotateCanvas = (degrees: number) => {
-     // For +/- 90 degrees, dimensions flip
      const newW = canvasSize.height;
      const newH = canvasSize.width;
      
@@ -1032,7 +1089,6 @@ const App: React.FC = () => {
              ctx.save();
              ctx.translate(newW / 2, newH / 2);
              ctx.rotate(degrees * Math.PI / 180);
-             // Draw source centered
              ctx.drawImage(l.canvas, -l.canvas.width/2, -l.canvas.height/2);
              ctx.restore();
          }
@@ -1045,6 +1101,7 @@ const App: React.FC = () => {
          canvasRef.current.height = newH;
      }
      setLayers(newLayers);
+     needsCompositeRef.current = true;
      saveHistory(newLayers, newW, newH);
   };
 
@@ -1066,7 +1123,6 @@ const App: React.FC = () => {
           newCanvas.height = newH;
           const ctx = newCanvas.getContext('2d');
           if (ctx) {
-              // Draw the slice of the original canvas onto new canvas
               ctx.drawImage(l.canvas, cropX, cropY, newW, newH, 0, 0, newW, newH);
           }
           return { ...l, canvas: newCanvas };
@@ -1078,6 +1134,7 @@ const App: React.FC = () => {
           canvasRef.current.height = newH;
       }
       setLayers(newLayers);
+      needsCompositeRef.current = true;
       saveHistory(newLayers, newW, newH);
       
       setIsCropping(false);
@@ -1102,7 +1159,6 @@ const App: React.FC = () => {
          newCanvas.width = newW;
          newCanvas.height = newH;
          const ctx = newCanvas.getContext('2d');
-         // High quality scaling
          if (ctx) {
              ctx.imageSmoothingEnabled = true;
              ctx.imageSmoothingQuality = 'high';
@@ -1117,6 +1173,7 @@ const App: React.FC = () => {
           canvasRef.current.height = newH;
       }
       setLayers(newLayers);
+      needsCompositeRef.current = true;
       saveHistory(newLayers, newW, newH);
       setShowResizeDialog(false);
   };
@@ -1132,7 +1189,7 @@ const App: React.FC = () => {
   };
 
   const handleDeleteLayer = (id: string) => {
-    if (layers.length <= 1) return; // Don't delete last layer
+    if (layers.length <= 1) return;
     const newLayers = layers.filter(l => l.id !== id);
     setLayers(newLayers);
     if (activeLayerId === id) {
@@ -1166,7 +1223,7 @@ const App: React.FC = () => {
       if (activeLayer) {
           const ctx = activeLayer.canvas.getContext('2d');
           ctx?.clearRect(0,0, activeLayer.canvas.width, activeLayer.canvas.height);
-          renderCompositeCanvas();
+          needsCompositeRef.current = true;
           saveHistory();
       }
   };
@@ -1176,7 +1233,6 @@ const App: React.FC = () => {
     if (!canvasRef.current || !editPrompt) return;
     setIsEditing(true);
     try {
-      // Send composite image to AI
       const base64Canvas = canvasRef.current.toDataURL('image/png');
       const results = await editImage(base64Canvas, editPrompt);
       setEditedImages(results);
@@ -1202,18 +1258,14 @@ const App: React.FC = () => {
   };
 
   const handleApplyResult = (src: string) => {
-    // Add result as new layer
     const img = new Image();
     img.src = src;
     img.onload = () => {
         const newLayer = createLayer(`Magic Result ${layers.length}`, canvasSize.width, canvasSize.height);
         const ctx = newLayer.canvas.getContext('2d');
-        
-        // Fit image
         const imgRatio = img.width / img.height;
         const canvasRatio = canvasSize.width / canvasSize.height;
         let drawWidth, drawHeight, offsetX, offsetY;
-
         if (imgRatio > canvasRatio) {
             drawWidth = canvasSize.width;
             drawHeight = canvasSize.width / imgRatio;
@@ -1225,9 +1277,7 @@ const App: React.FC = () => {
             offsetY = 0;
             offsetX = (canvasSize.width - drawWidth) / 2;
         }
-
         ctx?.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
-        
         const newLayers = [...layers, newLayer];
         setLayers(newLayers);
         setActiveLayerId(newLayer.id);
@@ -1243,7 +1293,6 @@ const App: React.FC = () => {
     }
   };
 
-  // Brush Component
   const BrushBtn = ({ type, icon: Icon, active, onClick, label }: any) => (
     <div className="relative group w-full">
       <button
@@ -1262,8 +1311,6 @@ const App: React.FC = () => {
 
   return (
     <div className="fixed inset-0 bg-black text-gray-100 flex flex-col font-sans touch-manipulation">
-      
-      {/* Camera Overlay */}
       {showCamera && (
         <div className="fixed inset-0 z-50 bg-black flex flex-col">
           <div className="relative flex-1 bg-black">
@@ -1286,7 +1333,6 @@ const App: React.FC = () => {
         </div>
       )}
 
-      {/* Resize Dialog */}
       {showResizeDialog && (
           <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur flex items-center justify-center p-4">
               <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
@@ -1337,7 +1383,6 @@ const App: React.FC = () => {
           </div>
       )}
 
-      {/* Header */}
       <header className="p-4 border-b border-gray-800 flex items-center justify-between bg-black/80 backdrop-blur-md z-30 shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center">
@@ -1349,13 +1394,9 @@ const App: React.FC = () => {
         </div>
       </header>
 
-      {/* Main Content Area */}
       <main className="flex-1 flex flex-col min-h-0 relative w-full">
-        
-        {/* MODE: GENERATE */}
         {mode === AppMode.GENERATE && (
           <div className="flex-1 overflow-y-auto p-4 animate-fade-in pb-32">
-            {/* ... Generate UI Code ... */}
             <div className="max-w-5xl mx-auto space-y-6">
               <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
                 <h2 className="text-2xl font-bold mb-4 text-white">Create</h2>
@@ -1428,7 +1469,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* MODE: EDIT */}
         {mode === AppMode.EDIT && (
           <div className="flex-1 flex flex-col relative overflow-hidden animate-fade-in">
               {layers.length === 0 ? (
@@ -1437,7 +1477,6 @@ const App: React.FC = () => {
                      <div className="bg-gray-900 p-8 rounded-3xl border border-gray-800 text-center shadow-2xl">
                        <h2 className="text-3xl font-bold mb-2">Magic Canvas</h2>
                        <p className="text-gray-400 mb-8">Start by choosing a source</p>
-                       
                        <div className="grid grid-cols-2 gap-4">
                           <label className="flex flex-col items-center justify-center h-40 bg-gray-800 rounded-2xl cursor-pointer hover:bg-gray-700 transition-all border border-gray-700 hover:border-indigo-500 group">
                             <IconUpload className="w-10 h-10 mb-3 text-indigo-500 group-hover:scale-110 transition-transform" />
@@ -1467,7 +1506,6 @@ const App: React.FC = () => {
                 </div>
               ) : (
                 <>
-                  {/* Canvas Viewport */}
                   <div 
                     ref={containerRef}
                     onWheel={handleWheel}
@@ -1501,7 +1539,6 @@ const App: React.FC = () => {
                             className="shadow-2xl border border-gray-800 bg-gray-900 absolute inset-0"
                             style={{ maxWidth: 'unset' }} 
                           />
-                          {/* Crop Overlay */}
                           {isCropping && cropRect && (
                               <div 
                                 className="absolute pointer-events-none border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.7)]"
@@ -1515,9 +1552,6 @@ const App: React.FC = () => {
                                   <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-30">
                                       {[...Array(9)].map((_, i) => <div key={i} className="border-r border-b border-white last:border-0 [&:nth-child(3n)]:border-r-0 [&:nth-child(n+7)]:border-b-0"></div>)}
                                   </div>
-                                  
-                                  {/* Resize Handles */}
-                                  {/* Corners */}
                                   <div className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border border-gray-500 shadow-sm"></div>
                                   <div className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border border-gray-500 shadow-sm"></div>
                                   <div className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border border-gray-500 shadow-sm"></div>
@@ -1527,10 +1561,8 @@ const App: React.FC = () => {
                        </div>
                     </div>
 
-                    {/* Editor Processing Overlay */}
                     {isEditing && <ProcessingOverlay text="Weaving Magic..." />}
                     
-                    {/* Floating Zoom Controls */}
                     <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 p-1.5 bg-black/60 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl z-20">
                       <button onClick={handleZoomIn} className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 rounded-full transition-colors">
                         <IconZoomIn className="w-5 h-5" />
@@ -1546,18 +1578,15 @@ const App: React.FC = () => {
                       </button>
                     </div>
 
-                    {/* Floating Layers Panel */}
                     <div 
                       onWheel={(e) => e.stopPropagation()}
                       className={`absolute right-4 top-4 z-30 transition-all ${showLayerPanel ? 'w-72' : 'w-auto'}`}
                     >
-                         {/* Toggle Button */}
                         {!showLayerPanel && (
                              <button onClick={() => setShowLayerPanel(true)} className="p-3 bg-black/80 backdrop-blur-md border border-white/10 rounded-xl text-white shadow-xl hover:bg-white/10">
                                 <IconLayers className="w-5 h-5" />
                              </button>
                         )}
-                        {/* Panel Content (Same as previous) */}
                         {showLayerPanel && (
                            <div className="bg-black/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[60vh]">
                                 <div className="p-3 border-b border-white/10 flex justify-between items-center bg-white/5">
@@ -1675,7 +1704,6 @@ const App: React.FC = () => {
                         )}
                     </div>
 
-                    {/* Draggable Brushes Toolbar */}
                     <div 
                         ref={toolbarRef}
                         onPointerDown={handleDragStart}
@@ -1686,7 +1714,6 @@ const App: React.FC = () => {
                         style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }}
                         className={`absolute left-4 top-4 w-auto bg-black/90 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing touch-none z-30 transition-all ${isToolbarMinimized ? 'p-2' : 'p-3'}`}
                     >
-                        {/* Header */}
                         <div className="flex justify-between items-center px-1 gap-2" onPointerDown={(e) => e.stopPropagation()}>
                            <div className="p-1 cursor-grab active:cursor-grabbing" onPointerDown={handleDragStart}>
                               <IconMove className="w-4 h-4 text-gray-500" />
@@ -1707,7 +1734,6 @@ const App: React.FC = () => {
 
                         {!isToolbarMinimized && !isCropping && (
                           <div onPointerDown={(e) => e.stopPropagation()} className="space-y-4 animate-fade-in w-64">
-                            {/* Main Tool Grid */}
                             <div className="grid grid-cols-4 gap-2">
                               <BrushBtn type="pan" icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} label="Pan" />
                               <BrushBtn type="pen" icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} label="Pen" />
@@ -1726,7 +1752,6 @@ const App: React.FC = () => {
                               </div>
                             </div>
 
-                            {/* Secondary Tools Menu */}
                             {showToolsMenu && (
                                 <div className="grid grid-cols-4 gap-2 p-2 bg-white/5 rounded-xl border border-white/5 animate-fade-in">
                                     <button onClick={() => { setIsCropping(true); setShowToolsMenu(false); }} className="p-2 bg-gray-800 rounded-lg text-gray-400 hover:text-white flex justify-center" title="Crop">
@@ -1744,7 +1769,6 @@ const App: React.FC = () => {
                                 </div>
                             )}
 
-                            {/* Brushes */}
                             <div className="grid grid-cols-4 gap-2">
                                 <BrushBtn type="spray" icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} label="Spray" />
                                 <BrushBtn type="marker" icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} label="Marker" />
@@ -1766,7 +1790,6 @@ const App: React.FC = () => {
                                 </div>
                             </div>
                             
-                            {/* Brush Size */}
                             <div className="space-y-1">
                                 <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
                                    <span>Size</span>
@@ -1779,9 +1802,22 @@ const App: React.FC = () => {
                                 />
                              </div>
 
-                             {/* Brush Settings */}
                              {showBrushSettings && (
                                 <div className="p-3 bg-white/5 rounded-xl space-y-3 animate-fade-in border border-white/5">
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
+                                            <span>Brush Shape</span>
+                                        </div>
+                                        <select 
+                                            value={brushShape} 
+                                            onChange={(e) => setBrushShape(e.target.value as any)}
+                                            className="w-full bg-gray-600 rounded-lg p-1 text-xs text-white border-none focus:ring-0"
+                                        >
+                                            <option value="round">Round</option>
+                                            <option value="square">Square</option>
+                                            <option value="textured">Textured</option>
+                                        </select>
+                                    </div>
                                     <div className="space-y-1">
                                         <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
                                             <span>Flow</span>
@@ -1804,10 +1840,20 @@ const App: React.FC = () => {
                                             className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-pink-500"
                                         />
                                     </div>
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
+                                            <span>Falloff</span>
+                                            <span>{brushFalloff}</span>
+                                        </div>
+                                        <input 
+                                            type="range" min="0" max="100" value={brushFalloff}
+                                            onChange={(e) => setBrushFalloff(parseInt(e.target.value))}
+                                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                        />
+                                    </div>
                                 </div>
                              )}
 
-                            {/* Remove Background */}
                             <button 
                                 onClick={handleRemoveBackground}
                                 className="w-full p-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 rounded-lg flex items-center justify-center gap-2 border border-indigo-500/30 transition-all"
@@ -1818,7 +1864,6 @@ const App: React.FC = () => {
 
                             <div className="h-px bg-white/10"></div>
                             
-                            {/* Undo/Redo */}
                             <div className="flex justify-between gap-1">
                                <div className="relative group flex-1">
                                  <button onClick={handleUndo} disabled={historyStep <= 0} className="w-full p-2 text-gray-400 hover:text-white disabled:opacity-30 flex justify-center"><IconUndo /></button>
@@ -1828,7 +1873,6 @@ const App: React.FC = () => {
                                </div>
                             </div>
                              
-                             {/* Colors */}
                              <div className="grid grid-cols-4 gap-2">
                                 {['#FFFFFF', '#000000', '#FF0055', '#00E5FF', '#FFD700', '#32CD32', '#FF4500', '#9370DB'].map(color => (
                                   <button 
@@ -1842,7 +1886,6 @@ const App: React.FC = () => {
                           </div>
                         )}
                         
-                        {/* Crop Mode Controls */}
                         {isCropping && (
                             <div onPointerDown={(e) => e.stopPropagation()} className="w-64 space-y-3 animate-fade-in">
                                 <div className="text-center text-xs font-bold text-white uppercase tracking-wider mb-2">Crop Mode</div>
@@ -1872,7 +1915,6 @@ const App: React.FC = () => {
                         )}
                     </div>
 
-                    {/* Magic Bar */}
                     {!isCropping && (
                       <div className="absolute bottom-24 md:bottom-8 left-0 right-0 z-40 px-4 flex justify-center pointer-events-none">
                         <div className="w-full max-w-2xl pointer-events-auto">
@@ -1918,7 +1960,6 @@ const App: React.FC = () => {
                     )}
                   </div>
 
-                  {/* Results Overlay */}
                    {editedImages.length > 0 && (
                       <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
                         <div className="bg-gray-900 rounded-3xl p-6 max-w-2xl w-full border border-gray-700 shadow-2xl relative">
@@ -1956,7 +1997,6 @@ const App: React.FC = () => {
           </div>
         )}
 
-        {/* MODE: GALLERY */}
         {mode === AppMode.GALLERY && (
           <div className="flex-1 overflow-y-auto p-4 animate-fade-in pb-32">
             <div className="max-w-6xl mx-auto">
@@ -2004,7 +2044,6 @@ const App: React.FC = () => {
         )}
       </main>
 
-      {/* Mobile Bottom Navigation */}
       <div className="fixed bottom-0 left-0 right-0 bg-gray-950/90 backdrop-blur-lg border-t border-gray-800 md:hidden z-40 pb-safe">
         <div className="flex justify-around p-3">
           <NavBtn active={mode === AppMode.GENERATE} onClick={() => setMode(AppMode.GENERATE)} icon={<IconWand />} label="Create" />
@@ -2013,7 +2052,6 @@ const App: React.FC = () => {
         </div>
       </div>
 
-      {/* Desktop Navigation */}
       <div className="hidden md:flex fixed left-6 top-1/2 -translate-y-1/2 flex-col gap-4 bg-gray-900/90 backdrop-blur border border-gray-700 p-2 rounded-2xl shadow-2xl z-50">
           <NavBtn active={mode === AppMode.GENERATE} onClick={() => setMode(AppMode.GENERATE)} icon={<IconWand />} label="Create" vertical />
           <NavBtn active={mode === AppMode.EDIT} onClick={() => setMode(AppMode.EDIT)} icon={<IconPen />} label="Editor" vertical />
