@@ -1,0 +1,8 @@
+{
+  "name": "MagicLens AI",
+  "description": "A high-performance creative suite for editing photos, generating assets, and analyzing visuals using Google's Gemini models.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
