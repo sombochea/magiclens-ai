@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { AppMode, AspectRatio, ImageResolution, HistoryItem } from './types';
+import { AppMode, AspectRatio, ImageResolution, HistoryItem, Layer, LayerSnapshot } from './types';
 import { generateImage, editImage } from './services/geminiService';
 import { initDB, saveItem, getItems, deleteItem } from './services/storageService';
 import { 
@@ -7,7 +7,8 @@ import {
   IconSpray, IconMarker, IconEraser, IconBrush, IconUndo, 
   IconRedo, IconCamera, IconX, IconHistory, IconMove,
   IconHand, IconZoomIn, IconZoomOut, IconMinimize, IconMaximize,
-  IconSave, IconRestore, IconScissors, IconCheck
+  IconSave, IconRestore, IconScissors, IconCheck, IconLayers,
+  IconEye, IconEyeOff, IconPlus, IconArrowUp, IconArrowDown, IconImage
 } from './components/Icons';
 
 // Magical Processing Overlay
@@ -31,6 +32,25 @@ const ProcessingOverlay = ({ text }: { text: string }) => (
   </div>
 );
 
+const BLEND_MODES: { value: GlobalCompositeOperation; label: string }[] = [
+  { value: 'source-over', label: 'Normal' },
+  { value: 'multiply', label: 'Multiply' },
+  { value: 'screen', label: 'Screen' },
+  { value: 'overlay', label: 'Overlay' },
+  { value: 'darken', label: 'Darken' },
+  { value: 'lighten', label: 'Lighten' },
+  { value: 'color-dodge', label: 'Color Dodge' },
+  { value: 'color-burn', label: 'Color Burn' },
+  { value: 'hard-light', label: 'Hard Light' },
+  { value: 'soft-light', label: 'Soft Light' },
+  { value: 'difference', label: 'Difference' },
+  { value: 'exclusion', label: 'Exclusion' },
+  { value: 'hue', label: 'Hue' },
+  { value: 'saturation', label: 'Saturation' },
+  { value: 'color', label: 'Color' },
+  { value: 'luminosity', label: 'Luminosity' },
+];
+
 const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>(AppMode.GENERATE);
   
@@ -42,17 +62,22 @@ const App: React.FC = () => {
   const [isGenerating, setIsGenerating] = useState(false);
 
   // -- Editing State --
-  const [editFile, setEditFile] = useState<File | null>(null);
-  const [editPreview, setEditPreview] = useState<string | null>(null);
   const [editPrompt, setEditPrompt] = useState('');
   const [isEditing, setIsEditing] = useState(false);
   const [editedImages, setEditedImages] = useState<string[]>([]);
   
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  // Layer System
+  const [layers, setLayers] = useState<Layer[]>([]);
+  const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
+  const [showLayerPanel, setShowLayerPanel] = useState(false);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 }); // Workspace size
   
-  // Undo/Redo History
-  const [history, setHistory] = useState<ImageData[]>([]);
+  const canvasRef = useRef<HTMLCanvasElement>(null); // Main composite canvas
+  const containerRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null); // For adding image layers
+  
+  // Undo/Redo History (Snapshot of all layers)
+  const [history, setHistory] = useState<LayerSnapshot[][]>([]);
   const [historyStep, setHistoryStep] = useState<number>(-1);
 
   // Camera State
@@ -113,6 +138,48 @@ const App: React.FC = () => {
     document.body.removeChild(link);
   };
 
+  // --- Helpers: Layer Management ---
+
+  const createLayer = (name: string, width: number, height: number): Layer => {
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    return {
+      id: generateId(),
+      name,
+      visible: true,
+      opacity: 1,
+      blendMode: 'source-over',
+      canvas
+    };
+  };
+
+  const renderCompositeCanvas = () => {
+    const mainCanvas = canvasRef.current;
+    if (!mainCanvas) return;
+    const ctx = mainCanvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
+    
+    // Draw layers from bottom to top
+    layers.forEach(layer => {
+      if (layer.visible) {
+        ctx.globalAlpha = layer.opacity;
+        ctx.globalCompositeOperation = layer.blendMode;
+        ctx.drawImage(layer.canvas, 0, 0);
+      }
+    });
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+  };
+
+  // Re-render whenever layers change
+  useEffect(() => {
+    renderCompositeCanvas();
+  }, [layers, canvasSize]);
+
+
   // --- Handlers: Generation ---
   const handleGenerate = async () => {
     if (!genPrompt.trim()) return;
@@ -139,24 +206,115 @@ const App: React.FC = () => {
   };
 
   // --- Handlers: Editing ---
+
+  const initEditorWithImage = (src: string) => {
+    const img = new Image();
+    img.src = src;
+    img.onload = () => {
+      const maxDim = 2048; 
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const width = Math.floor(img.width * scale);
+      const height = Math.floor(img.height * scale);
+      
+      setCanvasSize({ width, height });
+      
+      // Update Main Canvas Size
+      if (canvasRef.current) {
+        canvasRef.current.width = width;
+        canvasRef.current.height = height;
+      }
+
+      // Create Background Layer
+      const bgLayer = createLayer('Background', width, height);
+      const ctx = bgLayer.canvas.getContext('2d');
+      ctx?.drawImage(img, 0, 0, width, height);
+      
+      setLayers([bgLayer]);
+      setActiveLayerId(bgLayer.id);
+      
+      // Reset history
+      setHistory([]);
+      setHistoryStep(-1);
+      
+      // Save initial state
+      setTimeout(() => saveHistory([bgLayer]), 100);
+      
+      setTransform({ x: 0, y: 0, scale: 1 });
+    };
+  };
+
   const handleEditFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      setEditFile(file);
       const reader = new FileReader();
       reader.onload = (ev) => {
-        setEditPreview(ev.target?.result as string);
-        setTransform({ x: 0, y: 0, scale: 1 }); // Reset zoom
+        if (ev.target?.result) {
+           initEditorWithImage(ev.target.result as string);
+        }
       };
       reader.readAsDataURL(file);
       setEditedImages([]);
     }
   };
 
+  // Add Image as Layer (Blend/Composite)
+  const handleAddImageLayer = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      const file = e.target.files[0];
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        if (ev.target?.result) {
+          const src = ev.target.result as string;
+          
+          if (layers.length === 0) {
+            initEditorWithImage(src);
+          } else {
+             // Add as new layer
+             const img = new Image();
+             img.src = src;
+             img.onload = () => {
+                const newLayer = createLayer(`Image ${layers.length + 1}`, canvasSize.width, canvasSize.height);
+                const ctx = newLayer.canvas.getContext('2d');
+                
+                // Fit image to canvas (contain)
+                const imgRatio = img.width / img.height;
+                const canvasRatio = canvasSize.width / canvasSize.height;
+                let drawWidth, drawHeight, offsetX, offsetY;
+
+                if (imgRatio > canvasRatio) {
+                    drawWidth = canvasSize.width;
+                    drawHeight = canvasSize.width / imgRatio;
+                    offsetX = 0;
+                    offsetY = (canvasSize.height - drawHeight) / 2;
+                } else {
+                    drawHeight = canvasSize.height;
+                    drawWidth = canvasSize.height * imgRatio;
+                    offsetY = 0;
+                    offsetX = (canvasSize.width - drawWidth) / 2;
+                }
+
+                ctx?.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
+                
+                const newLayers = [...layers, newLayer];
+                setLayers(newLayers);
+                setActiveLayerId(newLayer.id);
+                saveHistory(newLayers);
+             };
+          }
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+    // Reset input
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
   // Session Management
   const saveSession = () => {
     if (!canvasRef.current) return;
     try {
+      // For session, we simplify and just save the composite image
+      // A full layer save would require serializing multiple canvases
       const sessionData = {
         image: canvasRef.current.toDataURL(),
         prompt: editPrompt,
@@ -184,7 +342,7 @@ const App: React.FC = () => {
         setBrushSize(session.brushSize || 20);
         setBrushType(session.brushType || 'pen');
         setTransform(session.transform || { x: 0, y: 0, scale: 1 });
-        setEditPreview(session.image); // This triggers the useEffect to redraw canvas
+        initEditorWithImage(session.image); 
       }
     } catch (e) {
        console.error(e);
@@ -229,32 +387,32 @@ const App: React.FC = () => {
       if (ctx) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const dataUrl = canvas.toDataURL('image/png');
-        setEditPreview(dataUrl);
-        setTransform({ x: 0, y: 0, scale: 1 });
-        fetch(dataUrl)
-          .then(res => res.blob())
-          .then(blob => {
-            const file = new File([blob], "camera-capture.png", { type: "image/png" });
-            setEditFile(file);
-          });
+        initEditorWithImage(dataUrl);
         setEditedImages([]);
         stopCamera();
       }
     }
   };
 
-  // Undo/Redo Logic
-  const saveHistory = () => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return;
+  // Undo/Redo Logic for Layers
+  const saveHistory = (currentLayers: Layer[] = layers) => {
+    // Snapshot all layers
+    const snapshot: LayerSnapshot[] = currentLayers.map(l => {
+      const ctx = l.canvas.getContext('2d');
+      return {
+        id: l.id,
+        name: l.name,
+        visible: l.visible,
+        opacity: l.opacity,
+        blendMode: l.blendMode,
+        imageData: ctx!.getImageData(0, 0, l.canvas.width, l.canvas.height)
+      };
+    });
 
-    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
     const newHistory = history.slice(0, historyStep + 1);
-    newHistory.push(imageData);
+    newHistory.push(snapshot);
     
-    if (newHistory.length > 20) {
+    if (newHistory.length > 10) { // Limit history depth
       newHistory.shift();
     } else {
       setHistoryStep(prev => prev + 1);
@@ -265,26 +423,60 @@ const App: React.FC = () => {
   const handleUndo = () => {
     if (historyStep > 0) {
       const newStep = historyStep - 1;
+      restoreHistoryStep(newStep);
       setHistoryStep(newStep);
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext('2d');
-      if (canvas && ctx && history[newStep]) {
-        ctx.putImageData(history[newStep], 0, 0);
-      }
     }
   };
 
   const handleRedo = () => {
     if (historyStep < history.length - 1) {
       const newStep = historyStep + 1;
+      restoreHistoryStep(newStep);
       setHistoryStep(newStep);
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext('2d');
-      if (canvas && ctx && history[newStep]) {
-        ctx.putImageData(history[newStep], 0, 0);
-      }
     }
   };
+
+  const restoreHistoryStep = (stepIndex: number) => {
+    const snapshot = history[stepIndex];
+    if (!snapshot) return;
+
+    // Reconstruct layers from snapshot
+    const restoredLayers: Layer[] = snapshot.map(s => {
+      const layer = createLayer(s.name, canvasSize.width, canvasSize.height);
+      layer.id = s.id;
+      layer.visible = s.visible;
+      layer.opacity = s.opacity;
+      layer.blendMode = s.blendMode;
+      const ctx = layer.canvas.getContext('2d');
+      ctx?.putImageData(s.imageData, 0, 0);
+      return layer;
+    });
+
+    setLayers(restoredLayers);
+    // Ensure active layer is valid
+    if (restoredLayers.length > 0 && !restoredLayers.find(l => l.id === activeLayerId)) {
+        setActiveLayerId(restoredLayers[restoredLayers.length - 1].id);
+    }
+  };
+
+  // --- Layer Properties Change ---
+  const handleLayerOpacityChange = (id: string, opacity: number) => {
+    const newLayers = layers.map(l => l.id === id ? { ...l, opacity } : l);
+    setLayers(newLayers);
+  };
+  
+  // Debounced save for slider drag
+  const handleLayerOpacityCommit = (id: string, opacity: number) => {
+     const newLayers = layers.map(l => l.id === id ? { ...l, opacity } : l);
+     saveHistory(newLayers);
+  };
+
+  const handleLayerBlendChange = (id: string, blendMode: GlobalCompositeOperation) => {
+    const newLayers = layers.map(l => l.id === id ? { ...l, blendMode } : l);
+    setLayers(newLayers);
+    saveHistory(newLayers);
+  };
+
 
   // --- Toolbar Dragging Logic ---
   const handleDragStart = (e: React.PointerEvent) => {
@@ -323,13 +515,8 @@ const App: React.FC = () => {
 
   // Mouse wheel zoom
   const handleWheel = (e: React.WheelEvent) => {
-    if (!editPreview || !canvasRef.current || !containerRef.current) return;
+    if (layers.length === 0 || !canvasRef.current || !containerRef.current) return;
     
-    // Prevent default to avoid scrolling the page (if accessible)
-    // Note: React's synthetic event preventDefault might need specific conditions in some browsers
-    // but works for non-passive interactions usually.
-    // e.preventDefault(); 
-
     const scaleAmount = -e.deltaY * 0.0015;
     const newScale = Math.min(Math.max(0.1, transform.scale * (1 + scaleAmount)), 20);
 
@@ -340,16 +527,12 @@ const App: React.FC = () => {
     const containerCenterX = rect.width / 2;
     const containerCenterY = rect.height / 2;
     
-    // Visual offset of the canvas (centered in container)
-    // The canvas is centered, so its top-left is at (containerWidth/2 - canvasWidth/2)
-    // Note: We use offsetWidth to get the layout width which matches visual size before transform
     const baseX = containerCenterX - (canvasRef.current.offsetWidth / 2);
     const baseY = containerCenterY - (canvasRef.current.offsetHeight / 2);
 
     const deltaX = x - baseX;
     const deltaY = y - baseY;
 
-    // Calculate new translation to keep mouse over same pixel
     const newTx = deltaX - (deltaX - transform.x) * (newScale / transform.scale);
     const newTy = deltaY - (deltaY - transform.y) * (newScale / transform.scale);
 
@@ -401,13 +584,23 @@ const App: React.FC = () => {
       return;
     }
 
+    if (!activeLayerId) {
+        alert("Please select a layer to draw on.");
+        return;
+    }
+
+    const activeLayer = layers.find(l => l.id === activeLayerId);
+    if (!activeLayer || !activeLayer.visible) return;
+
     setIsDrawing(true);
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const ctx = activeLayer.canvas.getContext('2d');
     if (!ctx) return;
     
-    const { x, y } = getCanvasPoint(e, canvas);
+    // We get points relative to the main canvas view, which matches layer coordinate space
+    const mainCanvas = canvasRef.current;
+    if (!mainCanvas) return;
+    
+    const { x, y } = getCanvasPoint(e, mainCanvas);
     
     ctx.lineWidth = brushSize;
     ctx.lineCap = 'round';
@@ -436,10 +629,10 @@ const App: React.FC = () => {
       ctx.beginPath();
       ctx.moveTo(x, y);
       lastDrawPointRef.current = { x, y };
-      // Draw a single dot to start
       ctx.lineTo(x, y);
       ctx.stroke();
     }
+    renderCompositeCanvas();
   };
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
@@ -457,28 +650,30 @@ const App: React.FC = () => {
 
     if (!isDrawing) return;
     
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const activeLayer = layers.find(l => l.id === activeLayerId);
+    if (!activeLayer) return;
+    const ctx = activeLayer.canvas.getContext('2d');
     if (!ctx) return;
     
-    const { x, y } = getCanvasPoint(e, canvas);
+    const mainCanvas = canvasRef.current;
+    if (!mainCanvas) return;
+
+    const { x, y } = getCanvasPoint(e, mainCanvas);
     
     if (brushType === 'spray') {
       sprayPaint(ctx, x, y, brushColor, brushSize);
       ctx.beginPath(); 
       ctx.moveTo(x, y);
     } else {
-      // Smooth Drawing Logic with Quadratic Curves
       const p1 = lastDrawPointRef.current;
       if (p1) {
-         // Midpoint between previous point and current point
          const mid = { x: (p1.x + x) / 2, y: (p1.y + y) / 2 };
          ctx.quadraticCurveTo(p1.x, p1.y, mid.x, mid.y);
          ctx.stroke();
          lastDrawPointRef.current = { x, y };
       }
     }
+    renderCompositeCanvas();
   };
 
   const handlePointerUp = () => {
@@ -488,8 +683,8 @@ const App: React.FC = () => {
     if (isDrawing) {
       setIsDrawing(false);
       lastDrawPointRef.current = null;
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext('2d');
+      const activeLayer = layers.find(l => l.id === activeLayerId);
+      const ctx = activeLayer?.canvas.getContext('2d');
       if (ctx) {
         ctx.beginPath();
         ctx.globalAlpha = 1;
@@ -498,62 +693,65 @@ const App: React.FC = () => {
     }
   };
 
-  // Sync canvas with uploaded image and initialize history
-  useEffect(() => {
-    if (editPreview && canvasRef.current) {
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d', { willReadFrequently: true });
-      const img = new Image();
-      img.src = editPreview;
-      img.onload = () => {
-        const maxDim = 2048; 
-        const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
-        
-        canvas.width = img.width * scale;
-        canvas.height = img.height * scale;
-        
-        ctx?.clearRect(0,0, canvas.width, canvas.height);
-        ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
-        
-        const initialData = ctx?.getImageData(0, 0, canvas.width, canvas.height);
-        if (initialData) {
-            setHistory([initialData]);
-            setHistoryStep(0);
-        }
-      };
-    }
-  }, [editPreview]);
+  // --- Layer Management ---
+  const handleAddLayer = () => {
+    if (!canvasRef.current) return;
+    const newLayer = createLayer(`Layer ${layers.length + 1}`, canvasSize.width, canvasSize.height);
+    const newLayers = [...layers, newLayer];
+    setLayers(newLayers);
+    setActiveLayerId(newLayer.id);
+    saveHistory(newLayers);
+  };
 
-  const clearCanvas = () => {
-    if (history.length > 0) {
-        const canvas = canvasRef.current;
-        const ctx = canvas?.getContext('2d');
-        if (canvas && ctx) {
-             ctx.putImageData(history[0], 0, 0);
-             setHistory([history[0]]);
-             setHistoryStep(0);
-        }
+  const handleDeleteLayer = (id: string) => {
+    if (layers.length <= 1) return; // Don't delete last layer
+    const newLayers = layers.filter(l => l.id !== id);
+    setLayers(newLayers);
+    if (activeLayerId === id) {
+        setActiveLayerId(newLayers[newLayers.length - 1].id);
+    }
+    saveHistory(newLayers);
+  };
+
+  const handleToggleVisibility = (id: string) => {
+    const newLayers = layers.map(l => l.id === id ? { ...l, visible: !l.visible } : l);
+    setLayers(newLayers);
+    saveHistory(newLayers);
+  };
+
+  const handleMoveLayer = (index: number, direction: 'up' | 'down') => {
+    if (direction === 'up' && index < layers.length - 1) {
+        const newLayers = [...layers];
+        [newLayers[index], newLayers[index + 1]] = [newLayers[index + 1], newLayers[index]];
+        setLayers(newLayers);
+        saveHistory(newLayers);
+    } else if (direction === 'down' && index > 0) {
+        const newLayers = [...layers];
+        [newLayers[index], newLayers[index - 1]] = [newLayers[index - 1], newLayers[index]];
+        setLayers(newLayers);
+        saveHistory(newLayers);
     }
   };
+
+  const handleClearLayer = () => {
+      const activeLayer = layers.find(l => l.id === activeLayerId);
+      if (activeLayer) {
+          const ctx = activeLayer.canvas.getContext('2d');
+          ctx?.clearRect(0,0, activeLayer.canvas.width, activeLayer.canvas.height);
+          renderCompositeCanvas();
+          saveHistory();
+      }
+  };
+
 
   const handleMagicEdit = async () => {
     if (!canvasRef.current || !editPrompt) return;
     setIsEditing(true);
     try {
+      // Send composite image to AI
       const base64Canvas = canvasRef.current.toDataURL('image/png');
       const results = await editImage(base64Canvas, editPrompt);
       setEditedImages(results);
-
-      const newItem: HistoryItem = {
-        id: generateId(),
-        type: 'edited',
-        src: results[0],
-        prompt: editPrompt,
-        timestamp: Date.now()
-      };
-      await saveItem(newItem);
-      loadGallery();
-
     } catch (e) {
       alert("Failed to edit image.");
     } finally {
@@ -568,16 +766,6 @@ const App: React.FC = () => {
       const base64Canvas = canvasRef.current.toDataURL('image/png');
       const results = await editImage(base64Canvas, "Remove the background from this image. Keep the subject isolated and visible.");
       setEditedImages(results);
-      
-      const newItem: HistoryItem = {
-        id: generateId(),
-        type: 'edited',
-        src: results[0],
-        prompt: "Remove background",
-        timestamp: Date.now()
-      };
-      await saveItem(newItem);
-      loadGallery();
     } catch (e) {
       alert("Failed to remove background.");
     } finally {
@@ -586,8 +774,38 @@ const App: React.FC = () => {
   };
 
   const handleApplyResult = (src: string) => {
-    setEditPreview(src); // This triggers the useEffect to redraw canvas with new image
-    setEditedImages([]); // Close overlay
+    // Add result as new layer
+    const img = new Image();
+    img.src = src;
+    img.onload = () => {
+        const newLayer = createLayer(`Magic Result ${layers.length}`, canvasSize.width, canvasSize.height);
+        const ctx = newLayer.canvas.getContext('2d');
+        
+        // Fit image
+        const imgRatio = img.width / img.height;
+        const canvasRatio = canvasSize.width / canvasSize.height;
+        let drawWidth, drawHeight, offsetX, offsetY;
+
+        if (imgRatio > canvasRatio) {
+            drawWidth = canvasSize.width;
+            drawHeight = canvasSize.width / imgRatio;
+            offsetX = 0;
+            offsetY = (canvasSize.height - drawHeight) / 2;
+        } else {
+            drawHeight = canvasSize.height;
+            drawWidth = canvasSize.height * imgRatio;
+            offsetY = 0;
+            offsetX = (canvasSize.width - drawWidth) / 2;
+        }
+
+        ctx?.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
+        
+        const newLayers = [...layers, newLayer];
+        setLayers(newLayers);
+        setActiveLayerId(newLayer.id);
+        saveHistory(newLayers);
+        setEditedImages([]);
+    };
   };
 
   const handleDeleteHistory = async (id: string) => {
@@ -611,6 +829,8 @@ const App: React.FC = () => {
       </div>
     </div>
   );
+
+  const activeLayer = layers.find(l => l.id === activeLayerId);
 
   return (
     <div className="fixed inset-0 bg-black text-gray-100 flex flex-col font-sans touch-manipulation">
@@ -736,7 +956,7 @@ const App: React.FC = () => {
         {/* MODE: EDIT */}
         {mode === AppMode.EDIT && (
           <div className="flex-1 flex flex-col relative overflow-hidden animate-fade-in">
-              {!editPreview ? (
+              {layers.length === 0 ? (
                 <div className="flex-1 overflow-y-auto p-4 flex flex-col justify-center">
                    <div className="max-w-lg mx-auto w-full pb-24 space-y-4">
                      <div className="bg-gray-900 p-8 rounded-3xl border border-gray-800 text-center shadow-2xl">
@@ -746,7 +966,7 @@ const App: React.FC = () => {
                        <div className="grid grid-cols-2 gap-4">
                           <label className="flex flex-col items-center justify-center h-40 bg-gray-800 rounded-2xl cursor-pointer hover:bg-gray-700 transition-all border border-gray-700 hover:border-indigo-500 group">
                             <IconUpload className="w-10 h-10 mb-3 text-indigo-500 group-hover:scale-110 transition-transform" />
-                            <span className="font-semibold text-sm">Upload</span>
+                            <span className="font-semibold text-sm">Open File</span>
                             <input type="file" className="hidden" accept="image/*" onChange={handleEditFileChange} />
                           </label>
                           <button 
@@ -786,13 +1006,15 @@ const App: React.FC = () => {
                         position: 'absolute',
                         left: '50%',
                         top: '50%',
-                        marginLeft: canvasRef.current ? -(canvasRef.current.width * 0.5) : 0,
-                        marginTop: canvasRef.current ? -(canvasRef.current.height * 0.5) : 0,
+                        marginLeft: -(canvasSize.width * 0.5),
+                        marginTop: -(canvasSize.height * 0.5),
                         transition: isPanning ? 'none' : 'transform 0.1s ease-out'
                       }}
                     >
                        <canvas 
                         ref={canvasRef}
+                        width={canvasSize.width}
+                        height={canvasSize.height}
                         onMouseDown={handlePointerDown}
                         onMouseMove={handlePointerMove}
                         onMouseUp={handlePointerUp}
@@ -813,19 +1035,123 @@ const App: React.FC = () => {
                       <button onClick={handleZoomIn} className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 rounded-full transition-colors">
                         <IconZoomIn className="w-5 h-5" />
                       </button>
-                      
-                      {/* Vertical text indicator */}
                       <span className="text-[10px] font-medium text-gray-400 rotate-90 py-2 select-none tracking-widest whitespace-nowrap">
                         {Math.round(transform.scale * 100)}%
                       </span>
-                      
                       <button onClick={handleZoomOut} className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 rounded-full transition-colors">
                         <IconZoomOut className="w-5 h-5" />
                       </button>
-                      
                       <button onClick={handleResetZoom} className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 rounded-full transition-colors mt-1 border-t border-white/10" title="Reset">
                          <div className="w-2 h-2 rounded-full bg-current" />
                       </button>
+                    </div>
+
+                    {/* Floating Layers Panel (Right Side, above Zoom) */}
+                    <div className={`absolute right-4 top-4 z-30 transition-all ${showLayerPanel ? 'w-72' : 'w-auto'}`}>
+                        {/* Toggle Button */}
+                        {!showLayerPanel && (
+                             <button onClick={() => setShowLayerPanel(true)} className="p-3 bg-black/80 backdrop-blur-md border border-white/10 rounded-xl text-white shadow-xl hover:bg-white/10">
+                                <IconLayers className="w-5 h-5" />
+                             </button>
+                        )}
+
+                        {/* Panel Content */}
+                        {showLayerPanel && (
+                            <div className="bg-black/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[60vh]">
+                                <div className="p-3 border-b border-white/10 flex justify-between items-center bg-white/5">
+                                    <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2">
+                                        <IconLayers className="w-4 h-4" /> Layers
+                                    </h3>
+                                    <button onClick={() => setShowLayerPanel(false)} className="text-gray-500 hover:text-white"><IconX className="w-4 h-4"/></button>
+                                </div>
+
+                                {activeLayer && (
+                                  <div className="p-3 border-b border-white/10 bg-white/5 space-y-3">
+                                      <div className="flex justify-between items-center">
+                                          <label className="text-xs text-gray-400">Opacity</label>
+                                          <span className="text-xs font-mono text-gray-300">{Math.round(activeLayer.opacity * 100)}%</span>
+                                      </div>
+                                      <input 
+                                        type="range" min="0" max="1" step="0.01" 
+                                        value={activeLayer.opacity}
+                                        onChange={(e) => handleLayerOpacityChange(activeLayer.id, parseFloat(e.target.value))}
+                                        onMouseUp={(e) => handleLayerOpacityCommit(activeLayer.id, parseFloat((e.target as HTMLInputElement).value))}
+                                        onTouchEnd={(e) => handleLayerOpacityCommit(activeLayer.id, parseFloat((e.target as HTMLInputElement).value))}
+                                        className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                                      />
+                                      
+                                      <div className="flex justify-between items-center mt-2">
+                                          <label className="text-xs text-gray-400">Blend Mode</label>
+                                          <select 
+                                            value={activeLayer.blendMode}
+                                            onChange={(e) => handleLayerBlendChange(activeLayer.id, e.target.value as GlobalCompositeOperation)}
+                                            className="bg-gray-800 border border-gray-600 text-xs text-white rounded px-2 py-1 outline-none focus:border-indigo-500"
+                                          >
+                                              {BLEND_MODES.map(mode => (
+                                                  <option key={mode.value} value={mode.value}>{mode.label}</option>
+                                              ))}
+                                          </select>
+                                      </div>
+                                  </div>
+                                )}
+                                
+                                <div className="overflow-y-auto flex-col-reverse flex p-2 gap-2">
+                                    {layers.map((layer, index) => (
+                                        <div 
+                                            key={layer.id} 
+                                            onClick={() => setActiveLayerId(layer.id)}
+                                            className={`p-2 rounded-lg flex items-center gap-2 cursor-pointer border transition-all ${activeLayerId === layer.id ? 'bg-indigo-900/50 border-indigo-500/50' : 'bg-gray-800/50 border-transparent hover:bg-gray-800'}`}
+                                        >
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); handleToggleVisibility(layer.id); }}
+                                                className={`p-1 rounded hover:bg-white/10 ${layer.visible ? 'text-gray-300' : 'text-gray-600'}`}
+                                            >
+                                                {layer.visible ? <IconEye className="w-4 h-4" /> : <IconEyeOff className="w-4 h-4" />}
+                                            </button>
+                                            
+                                            {/* Preview Thumbnail */}
+                                            <div className="w-8 h-8 bg-gray-700 rounded border border-white/5 overflow-hidden flex-shrink-0">
+                                                {/* Simple checkerboard */}
+                                                <div className="w-full h-full bg-checkerboard opacity-50"></div> 
+                                            </div>
+
+                                            <div className="flex-1 min-w-0">
+                                              <p className="text-xs font-medium text-gray-200 truncate select-none">{layer.name}</p>
+                                              <p className="text-[10px] text-gray-500 truncate">{layer.blendMode}</p>
+                                            </div>
+                                            
+                                            {/* Layer Controls */}
+                                            {activeLayerId === layer.id && (
+                                                <div className="flex flex-col gap-0.5">
+                                                   <button onClick={(e) => { e.stopPropagation(); handleMoveLayer(index, 'up'); }} className="text-gray-500 hover:text-white disabled:opacity-30" disabled={index === layers.length - 1}><IconArrowUp className="w-3 h-3" /></button>
+                                                   <button onClick={(e) => { e.stopPropagation(); handleMoveLayer(index, 'down'); }} className="text-gray-500 hover:text-white disabled:opacity-30" disabled={index === 0}><IconArrowDown className="w-3 h-3" /></button>
+                                                </div>
+                                            )}
+                                             {activeLayerId === layer.id && layers.length > 1 && (
+                                                <button onClick={(e) => { e.stopPropagation(); handleDeleteLayer(layer.id); }} className="text-gray-500 hover:text-red-400 ml-1">
+                                                    <IconTrash className="w-3 h-3" />
+                                                </button>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                                <div className="p-2 border-t border-white/10 grid grid-cols-2 gap-2">
+                                    <button onClick={handleAddLayer} className="py-2 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-bold text-gray-300 flex items-center justify-center gap-2 transition-colors">
+                                        <IconPlus className="w-4 h-4" /> Add Layer
+                                    </button>
+                                    <label className="py-2 bg-white/5 hover:bg-white/10 rounded-lg text-xs font-bold text-gray-300 flex items-center justify-center gap-2 transition-colors cursor-pointer">
+                                        <IconImage className="w-4 h-4" /> Add Image
+                                        <input 
+                                          ref={fileInputRef}
+                                          type="file" 
+                                          accept="image/*" 
+                                          className="hidden" 
+                                          onChange={handleAddImageLayer} 
+                                        />
+                                    </label>
+                                </div>
+                            </div>
+                        )}
                     </div>
 
                     {/* Draggable Brushes Toolbar */}
@@ -872,11 +1198,11 @@ const App: React.FC = () => {
                               <BrushBtn type="marker" icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} label="Marker" />
                               <BrushBtn type="eraser" icon={IconEraser} active={brushType === 'eraser'} onClick={() => setBrushType('eraser')} label="Eraser" />
                               <div className="relative group w-full">
-                                <button onClick={clearCanvas} className="w-full p-2.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 flex items-center justify-center">
+                                <button onClick={handleClearLayer} className="w-full p-2.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 flex items-center justify-center">
                                   <IconTrash className="w-5 h-5" />
                                 </button>
                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
-                                  Clear Canvas
+                                  Clear Layer
                                 </div>
                               </div>
                             </div>
@@ -944,7 +1270,7 @@ const App: React.FC = () => {
                             <div className="relative flex items-center gap-2 bg-gray-950/80 backdrop-blur-2xl border border-white/10 rounded-full p-2 pl-2 shadow-2xl">
                                
                                <button 
-                                 onClick={() => {setEditPreview(null); setEditFile(null);}} 
+                                 onClick={() => {setLayers([]); setHistory([]); setHistoryStep(-1);}} 
                                  className="w-10 h-10 flex items-center justify-center rounded-full text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
                                  title="Cancel"
                                >
@@ -1002,7 +1328,7 @@ const App: React.FC = () => {
                                         onClick={() => handleApplyResult(src)}
                                         className="px-6 py-3 bg-indigo-600 text-white rounded-full font-bold shadow-lg flex items-center gap-2 hover:bg-indigo-500 transition-colors"
                                       >
-                                        <IconCheck className="w-4 h-4" /> Apply
+                                        <IconCheck className="w-4 h-4" /> Add as Layer
                                       </button>
                                       <button 
                                         onClick={() => downloadImage(src, `magic-edit-result-${Date.now()}.png`)}

@@ -1,8 +1,6 @@
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { AspectRatio, ImageResolution } from "../types";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-
 // Helpers
 const base64ToGenerativePart = (base64String: string, mimeType: string = 'image/png') => {
   return {
@@ -21,6 +19,7 @@ export const generateImage = async (
   aspectRatio: AspectRatio,
   imageSize: ImageResolution
 ): Promise<string[]> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
     const response: GenerateContentResponse = await ai.models.generateContent({
       model: 'gemini-3-pro-image-preview',
@@ -57,6 +56,7 @@ export const editImage = async (
   imageBase64: string,
   prompt: string
 ): Promise<string[]> => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
   try {
     const imagePart = base64ToGenerativePart(imageBase64);
     

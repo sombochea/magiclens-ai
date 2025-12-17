@@ -30,3 +30,23 @@ export interface HistoryItem {
   prompt: string;
   timestamp: number;
 }
+
+export interface Layer {
+  id: string;
+  name: string;
+  visible: boolean;
+  opacity: number;
+  blendMode: GlobalCompositeOperation;
+  // We use HTMLCanvasElement as the source for the layer data.
+  // This allows us to draw it efficiently to the composition canvas.
+  canvas: HTMLCanvasElement;
+}
+
+export interface LayerSnapshot {
+  id: string;
+  name: string;
+  visible: boolean;
+  opacity: number;
+  blendMode: GlobalCompositeOperation;
+  imageData: ImageData;
+}
