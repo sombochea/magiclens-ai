@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { AppMode, AspectRatio, ImageResolution, HistoryItem, Layer, LayerSnapshot, HistoryState } from './types';
 import { generateImage, editImage } from './services/geminiService';
@@ -76,17 +75,19 @@ const LayerThumbnail = ({ layer }: { layer: Layer }) => {
         const canvas = canvasRef.current;
         const ctx = canvas?.getContext('2d');
         if (canvas && ctx && layer.canvas) {
-            ctx.clearRect(0,0, canvas.width, canvas.height);
+            canvas.width = 40;
+            canvas.height = 40;
+            ctx.clearRect(0,0, 40, 40);
             const s = 4;
-            for(let x=0; x<canvas.width; x+=s) {
-                for(let y=0; y<canvas.height; y+=s) {
+            for(let x=0; x<40; x+=s) {
+                for(let y=0; y<40; y+=s) {
                     ctx.fillStyle = (x/s + y/s) % 2 === 0 ? '#333' : '#444';
                     ctx.fillRect(x,y,s,s);
                 }
             }
-            ctx.drawImage(layer.canvas, 0, 0, canvas.width, canvas.height);
+            ctx.drawImage(layer.canvas, 0, 0, 40, 40);
         }
-    }); 
+    }, [layer.canvas, layer.visible]); 
 
     return <canvas ref={canvasRef} width={40} height={40} className="w-8 h-8 rounded border border-white/10 bg-gray-800 object-cover flex-shrink-0" />;
 };
@@ -113,6 +114,8 @@ const App: React.FC = () => {
   const [historyStep, setHistoryStep] = useState<number>(-1);
   const [showCamera, setShowCamera] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('environment');
+  
+  // Brush State
   const [isDrawing, setIsDrawing] = useState(false);
   const [brushColor, setBrushColor] = useState('#FF0055');
   const [brushSize, setBrushSize] = useState(20);
@@ -122,10 +125,14 @@ const App: React.FC = () => {
   const [brushFlow, setBrushFlow] = useState(100); 
   const [brushFalloff, setBrushFalloff] = useState(0); 
   const [showBrushSettings, setShowBrushSettings] = useState(false);
-  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({ shape: true, advanced: true, colors: false });
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({ shape: true, advanced: true, colors: false, symmetry: true });
+  
+  // Symmetry State
+  const [symmetry, setSymmetry] = useState<'none' | 'vertical' | 'horizontal' | 'radial'>('none');
+  const [radialCount, setRadialCount] = useState(4);
+
   const [isCropping, setIsCropping] = useState(false);
   const [cropRect, setCropRect] = useState<{x:number, y:number, w:number, h:number} | null>(null);
-  const [cropInteraction, setCropInteraction] = useState<string | null>(null);
   const [showResizeDialog, setShowResizeDialog] = useState(false);
   const [resizeWidth, setResizeWidth] = useState(0);
   const [resizeHeight, setResizeHeight] = useState(0);
@@ -146,13 +153,11 @@ const App: React.FC = () => {
   const replaceInputRef = useRef<HTMLInputElement>(null); 
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const cropStartRef = useRef<{x: number, y: number, rect: {x:number, y:number, w:number, h:number}}>({x:0,y:0, rect:{x:0,y:0,w:0,h:0}});
   const lastDrawPointRef = useRef<{x: number, y: number} | null>(null);
   const strokeDistanceRef = useRef(0);
   const rafIdRef = useRef<number | null>(null);
   const needsCompositeRef = useRef<boolean>(false);
   const panStartRef = useRef({ x: 0, y: 0 });
-  const pinchRef = useRef<{ dist: number; center: {x:number, y:number}; startScale: number; startTranslate: {x:number, y:number}; startCoords: {x:number, y:number} } | null>(null);
   const toolbarRef = useRef<HTMLDivElement>(null);
   const dragStartRef = useRef({ x: 0, y: 0 });
   const brushTipCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -213,6 +218,13 @@ const App: React.FC = () => {
     if (!mainCanvas) return;
     const ctx = mainCanvas.getContext('2d');
     if (!ctx) return;
+    
+    // Crucial: ensure main canvas matches canvasSize before drawing
+    if (mainCanvas.width !== canvasSize.width || mainCanvas.height !== canvasSize.height) {
+      mainCanvas.width = canvasSize.width;
+      mainCanvas.height = canvasSize.height;
+    }
+
     ctx.clearRect(0, 0, mainCanvas.width, mainCanvas.height);
     layers.forEach(layer => {
       if (layer.visible) {
@@ -224,7 +236,7 @@ const App: React.FC = () => {
     ctx.globalAlpha = 1;
     ctx.globalCompositeOperation = 'source-over';
     needsCompositeRef.current = false;
-  }, [layers, activeLayerId, previewBlendMode]);
+  }, [layers, activeLayerId, previewBlendMode, canvasSize]);
 
   useEffect(() => {
     const loop = () => {
@@ -241,7 +253,6 @@ const App: React.FC = () => {
   const handleGenerate = async () => {
     if (!genPrompt.trim()) return;
 
-    // MANDATORY API key selection check for gemini-3-pro-image-preview
     if (typeof window !== 'undefined' && (window as any).aistudio) {
       try {
         const hasKey = await (window as any).aistudio.hasSelectedApiKey();
@@ -273,16 +284,26 @@ const App: React.FC = () => {
       const scale = Math.min(1, 2048 / Math.max(img.width, img.height));
       const w = Math.floor(img.width * scale);
       const h = Math.floor(img.height * scale);
+      
+      // Update state and immediately apply to canvas
       setCanvasSize({ width: w, height: h });
-      if (canvasRef.current) { canvasRef.current.width = w; canvasRef.current.height = h; }
+      if (canvasRef.current) { 
+        canvasRef.current.width = w; 
+        canvasRef.current.height = h; 
+      }
+      
       const bg = createLayer('Background', w, h);
       bg.canvas.getContext('2d')?.drawImage(img, 0, 0, w, h);
+      
       setLayers([bg]);
       setActiveLayerId(bg.id);
       setHistory([]);
       setHistoryStep(-1);
       setTimeout(() => saveHistory([bg], w, h), 100);
+      
+      // Center image in viewport
       setTransform({ x: 0, y: 0, scale: 1 });
+      needsCompositeRef.current = true;
     };
   };
 
@@ -298,6 +319,32 @@ const App: React.FC = () => {
       alert("Camera access failed.");
       setShowCamera(false);
     }
+  };
+
+  const getSymmetricPoints = (x: number, y: number) => {
+    const cx = canvasSize.width / 2;
+    const cy = canvasSize.height / 2;
+    const points = [{ x, y }];
+
+    if (symmetry === 'vertical') {
+      points.push({ x: 2 * cx - x, y });
+    } else if (symmetry === 'horizontal') {
+      points.push({ x, y: 2 * cy - y });
+    } else if (symmetry === 'radial') {
+      const angleStep = (2 * Math.PI) / radialCount;
+      const dx = x - cx;
+      const dy = y - cy;
+      const radius = Math.sqrt(dx * dx + dy * dy);
+      const startAngle = Math.atan2(dy, dx);
+      for (let i = 1; i < radialCount; i++) {
+        const angle = startAngle + angleStep * i;
+        points.push({
+          x: cx + Math.cos(angle) * radius,
+          y: cy + Math.sin(angle) * radius
+        });
+      }
+    }
+    return points;
   };
 
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
@@ -326,7 +373,13 @@ const App: React.FC = () => {
     let x = (cx - rect.left) * (canvas.width / rect.width);
     let y = (cy - rect.top) * (canvas.height / rect.height);
     
-    if (brushJitter > 0) { x += (Math.random() - 0.5) * brushJitter; y += (Math.random() - 0.5) * brushJitter; }
+    if (brushJitter > 0) { 
+        x += (Math.random() - 0.5) * brushJitter; 
+        y += (Math.random() - 0.5) * brushJitter; 
+    }
+
+    const points = getSymmetricPoints(x, y);
+
     ctx.lineWidth = brushSize;
     ctx.lineCap = brushShape === 'square' ? 'square' : 'round';
     ctx.lineJoin = brushShape === 'square' ? 'bevel' : 'round';
@@ -338,13 +391,19 @@ const App: React.FC = () => {
     ctx.globalAlpha = alpha;
     ctx.globalCompositeOperation = brushType === 'eraser' ? 'destination-out' : 'source-over';
 
-    if (brushType === 'spray') {
-      sprayPaint(ctx, x, y, brushColor, brushSize, brushFlow);
-    } else if (brushShape === 'textured') {
-      drawTexturedPoint(ctx, x, y, alpha);
-    } else {
-      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x, y); ctx.stroke();
-    }
+    points.forEach(p => {
+        if (brushType === 'spray') {
+          sprayPaint(ctx, p.x, p.y, brushColor, brushSize, brushFlow);
+        } else if (brushShape === 'textured') {
+          drawTexturedPoint(ctx, p.x, p.y, alpha);
+        } else {
+          ctx.beginPath(); 
+          ctx.moveTo(p.x, p.y); 
+          ctx.lineTo(p.x, p.y); 
+          ctx.stroke();
+        }
+    });
+
     lastDrawPointRef.current = { x, y };
     needsCompositeRef.current = true;
   };
@@ -387,32 +446,40 @@ const App: React.FC = () => {
     let x = (cx - rect.left) * (canvas.width / rect.width);
     let y = (cy - rect.top) * (canvas.height / rect.height);
 
-    if (brushJitter > 0) { x += (Math.random() - 0.5) * brushJitter; y += (Math.random() - 0.5) * brushJitter; }
-    if (lastDrawPointRef.current) {
-        const dx = x - lastDrawPointRef.current.x, dy = y - lastDrawPointRef.current.y;
+    if (brushJitter > 0) { 
+        x += (Math.random() - 0.5) * brushJitter; 
+        y += (Math.random() - 0.5) * brushJitter; 
+    }
+    
+    const last = lastDrawPointRef.current;
+    if (last) {
+        const dx = x - last.x, dy = y - last.y;
         strokeDistanceRef.current += Math.sqrt(dx*dx + dy*dy);
-    }
-    let alpha = brushType === 'marker' ? 0.5 : 1.0;
-    alpha *= (brushFlow / 100);
-    if (brushFalloff > 0) alpha *= Math.max(0, 1 - (strokeDistanceRef.current / (3000 / (brushFalloff * 0.5 || 1))));
-    ctx.globalAlpha = alpha;
+        
+        let alpha = brushType === 'marker' ? 0.5 : 1.0;
+        alpha *= (brushFlow / 100);
+        if (brushFalloff > 0) alpha *= Math.max(0, 1 - (strokeDistanceRef.current / (3000 / (brushFalloff * 0.5 || 1))));
+        ctx.globalAlpha = alpha;
 
-    if (brushType === 'spray') {
-      sprayPaint(ctx, x, y, brushColor, brushSize, brushFlow);
-    } else if (brushShape === 'textured') {
-         if (lastDrawPointRef.current) {
-            const last = lastDrawPointRef.current, dist = Math.hypot(x - last.x, y - last.y), angle = Math.atan2(y - last.y, x - last.x), step = Math.max(1, brushSize / 8); 
-            for (let i = 0; i < dist; i += step) drawTexturedPoint(ctx, last.x + Math.cos(angle) * i, last.y + Math.sin(angle) * i, alpha);
-         }
-    } else {
-      const p1 = lastDrawPointRef.current;
-      if (p1) {
-         ctx.lineCap = brushShape === 'square' ? 'square' : 'round';
-         ctx.lineJoin = brushShape === 'square' ? 'bevel' : 'round';
-         ctx.quadraticCurveTo(p1.x, p1.y, (p1.x + x) / 2, (p1.y + y) / 2);
-         ctx.stroke();
-      }
+        const points = getSymmetricPoints(x, y);
+        const lastPoints = getSymmetricPoints(last.x, last.y);
+
+        points.forEach((p, i) => {
+            const lp = lastPoints[i];
+            if (brushType === 'spray') {
+                sprayPaint(ctx, p.x, p.y, brushColor, brushSize, brushFlow);
+            } else if (brushShape === 'textured') {
+                const dist = Math.hypot(p.x - lp.x, p.y - lp.y), angle = Math.atan2(p.y - lp.y, p.x - lp.x), step = Math.max(1, brushSize / 8); 
+                for (let j = 0; j < dist; j += step) drawTexturedPoint(ctx, lp.x + Math.cos(angle) * j, lp.y + Math.sin(angle) * j, alpha);
+            } else {
+                ctx.beginPath();
+                ctx.moveTo(lp.x, lp.y);
+                ctx.lineTo(p.x, p.y);
+                ctx.stroke();
+            }
+        });
     }
+
     lastDrawPointRef.current = { x, y };
     needsCompositeRef.current = true;
   };
@@ -434,17 +501,21 @@ const App: React.FC = () => {
     }));
     const newHistory = history.slice(0, historyStep + 1);
     newHistory.push({ layers: snapshots, size: { width: w, height: h } });
-    if (newHistory.length > 10) newHistory.shift();
+    if (newHistory.length > 20) newHistory.shift();
     else setHistoryStep(prev => prev + 1);
     setHistory(newHistory);
   };
 
   const handleUndo = () => { if (historyStep > 0) restoreStep(historyStep - 1); };
   const handleRedo = () => { if (historyStep < history.length - 1) restoreStep(historyStep + 1); };
+  
   const restoreStep = (step: number) => {
     const s = history[step]; if (!s) return;
     setCanvasSize(s.size);
-    if (canvasRef.current) { canvasRef.current.width = s.size.width; canvasRef.current.height = s.size.height; }
+    if (canvasRef.current) { 
+        canvasRef.current.width = s.size.width; 
+        canvasRef.current.height = s.size.height; 
+    }
     const restored: Layer[] = s.layers.map(ls => {
       const l = createLayer(ls.name, s.size.width, s.size.height);
       l.id = ls.id; l.visible = ls.visible; l.opacity = ls.opacity; l.blendMode = ls.blendMode;
@@ -452,8 +523,9 @@ const App: React.FC = () => {
       return l;
     });
     setLayers(restored);
-    if (!restored.find(l => l.id === activeLayerId)) setActiveLayerId(restored[restored.length - 1]?.id);
+    if (!restored.find(l => l.id === activeLayerId)) setActiveLayerId(restored[restored.length - 1]?.id || null);
     setHistoryStep(step);
+    needsCompositeRef.current = true;
   };
 
   const saveSession = () => {
@@ -492,7 +564,8 @@ const App: React.FC = () => {
     img.onload = () => {
         const l = createLayer(`Magic Result`, canvasSize.width, canvasSize.height);
         l.canvas.getContext('2d')?.drawImage(img, 0, 0, canvasSize.width, canvasSize.height);
-        setLayers(prev => [...prev, l]); setActiveLayerId(l.id); setEditedImages([]); saveHistory([...layers, l]);
+        const newLayers = [...layers, l];
+        setLayers(newLayers); setActiveLayerId(l.id); setEditedImages([]); saveHistory(newLayers);
     };
   };
 
@@ -509,6 +582,7 @@ const App: React.FC = () => {
   const handleDeleteLayer = (id: string) => { if (layers.length <= 1) return; const next = layers.filter(l => l.id !== id); setLayers(next); if (activeLayerId === id) setActiveLayerId(next[next.length - 1].id); saveHistory(next); };
   const handleAddLayer = () => { const l = createLayer(`Layer ${layers.length + 1}`, canvasSize.width, canvasSize.height); setLayers(prev => [...prev, l]); setActiveLayerId(l.id); saveHistory([...layers, l]); };
   const handleClearLayer = () => { const l = layers.find(lx => lx.id === activeLayerId); if (l) { l.canvas.getContext('2d')?.clearRect(0,0, l.canvas.width, l.canvas.height); needsCompositeRef.current = true; saveHistory(); } };
+  
   const handleResetZoom = () => setTransform({ x: 0, y: 0, scale: 1 });
   const handleZoomIn = () => setTransform(p => ({ ...p, scale: Math.min(p.scale + 0.2, 10) }));
   const handleZoomOut = () => setTransform(p => ({ ...p, scale: Math.max(p.scale - 0.2, 0.1) }));
@@ -516,16 +590,23 @@ const App: React.FC = () => {
     const scaleFactor = 1 - e.deltaY * 0.001;
     setTransform(p => ({ ...p, scale: Math.min(Math.max(0.1, p.scale * scaleFactor), 10) }));
   };
+  
   const handleRotateCanvas = (deg: number) => {
     const w = canvasSize.height, h = canvasSize.width;
     const next = layers.map(l => {
       const c = document.createElement('canvas'); c.width = w; c.height = h;
-      const ctx = c.getContext('2d')!; ctx.translate(w/2, h/2); ctx.rotate(deg * Math.PI / 180); ctx.drawImage(l.canvas, -l.canvas.width/2, -l.canvas.height/2);
+      const ctx = c.getContext('2d')!; 
+      ctx.save();
+      ctx.translate(w/2, h/2); 
+      ctx.rotate(deg * Math.PI / 180); 
+      ctx.drawImage(l.canvas, -l.canvas.width/2, -l.canvas.height/2);
+      ctx.restore();
       return { ...l, canvas: c };
     });
     setCanvasSize({ width: w, height: h }); if (canvasRef.current) { canvasRef.current.width = w; canvasRef.current.height = h; }
     setLayers(next); saveHistory(next, w, h);
   };
+
   const openResizeDialog = () => { setResizeWidth(canvasSize.width); setResizeHeight(canvasSize.height); setShowResizeDialog(true); };
   const applyResize = () => {
     const w = resizeWidth, h = resizeHeight;
@@ -536,6 +617,7 @@ const App: React.FC = () => {
     setCanvasSize({ width: w, height: h }); if (canvasRef.current) { canvasRef.current.width = w; canvasRef.current.height = h; }
     setLayers(next); saveHistory(next, w, h); setShowResizeDialog(false);
   };
+
   const applyCrop = () => {
       if (!cropRect) return;
       const w = cropRect.w, h = cropRect.h;
@@ -571,16 +653,20 @@ const App: React.FC = () => {
         };
     }; r.readAsDataURL(f); }
   };
+  
   const stopCamera = () => { if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop()); setShowCamera(false); };
   const capturePhoto = () => {
     if (videoRef.current) {
-        const v = videoRef.current, c = document.createElement('canvas'); c.width = v.videoWidth; c.height = v.videoHeight;
-        c.getContext('2d')?.drawImage(v, 0, 0); initEditorWithImage(c.toDataURL()); stopCamera();
+        const v = videoRef.current, c = document.createElement('canvas'); 
+        c.width = v.videoWidth; 
+        c.height = v.videoHeight;
+        c.getContext('2d')?.drawImage(v, 0, 0); 
+        initEditorWithImage(c.toDataURL()); 
+        stopCamera();
     }
   };
   const toggleCameraFacing = () => startCamera(facingMode === 'user' ? 'environment' : 'user');
 
-  // Toolbar drag handlers to fix reported errors
   const handleDragStart = (e: React.PointerEvent) => {
     setIsDraggingToolbar(true);
     dragStartRef.current = {
@@ -611,7 +697,7 @@ const App: React.FC = () => {
     </button>
   );
 
-  const BrushBtn = ({ icon: Icon, active, onClick, label }: any) => (
+  const BrushBtn = ({ icon: Icon, active, onClick }: any) => (
     <button onClick={onClick} className={`w-full p-2.5 rounded-xl transition-all flex items-center justify-center ${active ? 'bg-indigo-600 text-white shadow-lg' : 'bg-gray-800/60 text-gray-400 hover:text-white'}`}>
       <Icon className="w-5 h-5" />
     </button>
@@ -671,7 +757,7 @@ const App: React.FC = () => {
               </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 {isGenerating && <div className="aspect-square bg-gray-900 rounded-3xl flex items-center justify-center border border-gray-800"><ProcessingOverlay text="Dreaming..."/></div>}
-                {generatedImages.map((src, i) => <div key={i} className="group relative rounded-3xl overflow-hidden border border-gray-800 shadow-xl"><img src={src} className="w-full h-auto"/><div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"><button onClick={() => downloadImage(src, 'magic.png')} className="px-6 py-3 bg-white text-black rounded-full font-bold">Download</button></div></div>)}
+                {generatedImages.map((src, i) => <div key={i} className="group relative rounded-3xl overflow-hidden border border-gray-800 shadow-xl"><img src={src} className="w-full h-auto" alt="AI Generated"/><div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity"><button onClick={() => downloadImage(src, 'magic.png')} className="px-6 py-3 bg-white text-black rounded-full font-bold">Download</button></div></div>)}
               </div>
             </div>
           </div>
@@ -728,7 +814,8 @@ const App: React.FC = () => {
                                             <LayerThumbnail layer={l}/>
                                             <div className="flex-1 min-w-0"><p className="text-xs font-black truncate text-gray-200">{l.name}</p><p className="text-[8px] font-black uppercase text-gray-600 tracking-tighter">{l.blendMode}</p></div>
                                             {activeLayerId === l.id && <div className="flex flex-col gap-1"><button onClick={e => { e.stopPropagation(); handleMoveLayer(i, 'up'); }} className="text-gray-500 hover:text-white" disabled={i===layers.length-1}><IconArrowUp className="w-3.5 h-3.5"/></button><button onClick={e => { e.stopPropagation(); handleMoveLayer(i, 'down'); }} className="text-gray-500 hover:text-white" disabled={i===0}><IconArrowDown className="w-3.5 h-3.5"/></button></div>}
-                                            {activeLayerId === l.id && layers.length > 1 && <button onClick={e => { e.stopPropagation(); handleDeleteLayer(l.id); }} className="text-gray-600 hover:text-red-400 p-1"><IconTrash className="w-3.5 h-3.5"/></button></div>
+                                            {activeLayerId === l.id && layers.length > 1 && <button onClick={e => { e.stopPropagation(); handleDeleteLayer(l.id); }} className="text-gray-600 hover:text-red-400 p-1"><IconTrash className="w-3.5 h-3.5"/></button>}
+                                        </div>
                                     ))}
                                 </div>
                                 <div className="p-4 border-t border-white/10 grid grid-cols-2 gap-3 bg-white/5">
@@ -745,7 +832,7 @@ const App: React.FC = () => {
                            <div className="flex gap-2"><button onClick={saveSession} className="text-gray-500 hover:text-emerald-400 transition-colors"><IconSave className="w-4 h-4" /></button><button onClick={() => setIsToolbarMinimized(!isToolbarMinimized)} className="text-gray-500 hover:text-white">{isToolbarMinimized ? <IconMaximize className="w-4 h-4"/> : <IconMinimize className="w-4 h-4" />}</button></div>
                         </div>
                         {!isToolbarMinimized && (
-                          <div onPointerDown={e => e.stopPropagation()} className="space-y-4 w-64 animate-fade-in custom-scrollbar">
+                          <div onPointerDown={e => e.stopPropagation()} className="space-y-4 w-64 animate-fade-in custom-scrollbar overflow-y-auto max-h-[80vh]">
                             <div className="grid grid-cols-4 gap-2">
                               <BrushBtn icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')}/>
                               <BrushBtn icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')}/>
@@ -775,6 +862,24 @@ const App: React.FC = () => {
                                     <div className="rounded-2xl border border-white/5 overflow-hidden">
                                         <button onClick={() => toggleSection('shape')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Brush Shape{collapsedSections.shape ? <IconChevronRight className="w-3 h-3"/> : <IconChevronDown className="w-3 h-3"/>}</button>
                                         {!collapsedSections.shape && <div className="p-3 bg-black/20 flex gap-1 bg-gray-900/50 p-1 rounded-xl m-2">{['round', 'square', 'textured'].map(s => <button key={s} onClick={() => setBrushShape(s as any)} className={`flex-1 py-1.5 text-[9px] font-black uppercase rounded-lg transition-all ${brushShape === s ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-500'}`}>{s}</button>)}</div>}
+                                    </div>
+                                    <div className="rounded-2xl border border-white/5 overflow-hidden">
+                                        <button onClick={() => toggleSection('symmetry')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Symmetry{collapsedSections.symmetry ? <IconChevronRight className="w-3 h-3"/> : <IconChevronDown className="w-3 h-3"/>}</button>
+                                        {!collapsedSections.symmetry && (
+                                            <div className="p-3 bg-black/20 space-y-4">
+                                                <div className="grid grid-cols-2 gap-1 bg-gray-900/50 p-1 rounded-xl">
+                                                    {['none', 'vertical', 'horizontal', 'radial'].map(s => (
+                                                        <button key={s} onClick={() => setSymmetry(s as any)} className={`py-1.5 text-[8px] font-black uppercase rounded-lg transition-all ${symmetry === s ? 'bg-indigo-600 text-white' : 'text-gray-500'}`}>{s}</button>
+                                                    ))}
+                                                </div>
+                                                {symmetry === 'radial' && (
+                                                    <div className="space-y-1">
+                                                        <div className="flex justify-between px-0.5"><span className="text-[8px] font-black uppercase text-gray-500">Radial Slices</span><span className="text-[9px] font-bold text-indigo-400">{radialCount}</span></div>
+                                                        <input type="range" min="2" max="12" value={radialCount} onChange={e => setRadialCount(parseInt(e.target.value))} className="w-full h-1 bg-gray-800 rounded accent-indigo-500"/>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
                                     </div>
                                     <div className="rounded-2xl border border-white/5 overflow-hidden">
                                         <button onClick={() => toggleSection('advanced')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Dynamics{collapsedSections.advanced ? <IconChevronRight className="w-3 h-3"/> : <IconChevronDown className="w-3 h-3"/>}</button>
@@ -815,7 +920,7 @@ const App: React.FC = () => {
                            <div className="grid grid-cols-1 gap-6">
                               {editedImages.map((src, i) => (
                                 <div key={i} className="relative rounded-[32px] overflow-hidden group bg-black shadow-2xl">
-                                  <img src={src} className="w-full max-h-[50vh] object-contain"/><div className="absolute bottom-6 left-6 right-6 flex gap-4 opacity-0 group-hover:opacity-100 transition-all translate-y-2 group-hover:translate-y-0"><button onClick={() => handleApplyResult(src)} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-2xl flex items-center justify-center gap-3 hover:bg-indigo-500 transition-all active:scale-95"><IconCheck className="w-5 h-5"/> Add as Layer</button><button onClick={() => downloadImage(src, 'magic.png')} className="py-4 px-6 bg-white/10 backdrop-blur-md text-white rounded-2xl border border-white/20"><IconDownload className="w-5 h-5"/></button></div>
+                                  <img src={src} className="w-full max-h-[50vh] object-contain" alt="AI Edited Result"/><div className="absolute bottom-6 left-6 right-6 flex gap-4 opacity-0 group-hover:opacity-100 transition-all translate-y-2 group-hover:translate-y-0"><button onClick={() => handleApplyResult(src)} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-2xl flex items-center justify-center gap-3 hover:bg-indigo-500 transition-all active:scale-95"><IconCheck className="w-5 h-5"/> Add as Layer</button><button onClick={() => downloadImage(src, 'magic.png')} className="py-4 px-6 bg-white/10 backdrop-blur-md text-white rounded-2xl border border-white/20"><IconDownload className="w-5 h-5"/></button></div>
                                 </div>
                               ))}
                            </div>
@@ -831,7 +936,7 @@ const App: React.FC = () => {
           <div className="flex-1 overflow-y-auto p-6 animate-fade-in pb-32">
             <div className="max-w-6xl mx-auto"><h2 className="text-3xl font-black tracking-tight mb-8">Magic Gallery</h2>
               {galleryItems.length === 0 ? <div className="text-center py-32 text-gray-500"><IconHistory className="w-16 h-16 mx-auto mb-4 opacity-20" /><p>Your creations will appear here.</p></div> : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">{galleryItems.map(item => (
-                <div key={item.id} className="group relative bg-gray-900/50 rounded-[32px] overflow-hidden border border-white/5 shadow-xl transition-all hover:scale-[1.02] hover:shadow-indigo-500/5"><img src={item.src} className="w-full h-64 object-cover" /><div className="p-6"><div className="flex justify-between items-start mb-3"><span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${item.type === 'generated' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-purple-500/20 text-purple-400'}`}>{item.type}</span><span className="text-[10px] text-gray-600 font-bold">{new Date(item.timestamp).toLocaleDateString()}</span></div><p className="text-sm text-gray-300 font-medium line-clamp-2">{item.prompt}</p></div><div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4"><button onClick={() => downloadImage(item.src, 'gallery.png')} className="p-4 bg-white/10 backdrop-blur rounded-full text-white"><IconDownload className="w-6 h-6"/></button><button onClick={() => { if(confirm('Delete?')) deleteItem(item.id).then(loadGallery); }} className="p-4 bg-red-500/20 rounded-full text-red-400"><IconTrash className="w-6 h-6"/></button></div></div>
+                <div key={item.id} className="group relative bg-gray-900/50 rounded-[32px] overflow-hidden border border-white/5 shadow-xl transition-all hover:scale-[1.02] hover:shadow-indigo-500/5"><img src={item.src} className="w-full h-64 object-cover" alt="Gallery item" /><div className="p-6"><div className="flex justify-between items-start mb-3"><span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${item.type === 'generated' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-purple-500/20 text-purple-400'}`}>{item.type}</span><span className="text-[10px] text-gray-600 font-bold">{new Date(item.timestamp).toLocaleDateString()}</span></div><p className="text-sm text-gray-300 font-medium line-clamp-2">{item.prompt}</p></div><div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4"><button onClick={() => downloadImage(item.src, 'gallery.png')} className="p-4 bg-white/10 backdrop-blur rounded-full text-white"><IconDownload className="w-6 h-6"/></button><button onClick={() => { if(confirm('Delete?')) deleteItem(item.id).then(loadGallery); }} className="p-4 bg-red-500/20 rounded-full text-red-400"><IconTrash className="w-6 h-6"/></button></div></div>
               ))}</div>}
             </div>
           </div>
