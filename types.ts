@@ -50,3 +50,8 @@ export interface LayerSnapshot {
   blendMode: GlobalCompositeOperation;
   imageData: ImageData;
 }
+
+export interface HistoryState {
+  layers: LayerSnapshot[];
+  size: { width: number; height: number };
+}

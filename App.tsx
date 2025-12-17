@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { AppMode, AspectRatio, ImageResolution, HistoryItem, Layer, LayerSnapshot } from './types';
+import { AppMode, AspectRatio, ImageResolution, HistoryItem, Layer, LayerSnapshot, HistoryState } from './types';
 import { generateImage, editImage } from './services/geminiService';
 import { initDB, saveItem, getItems, deleteItem } from './services/storageService';
 import { 
@@ -9,7 +9,7 @@ import {
   IconHand, IconZoomIn, IconZoomOut, IconMinimize, IconMaximize,
   IconSave, IconRestore, IconScissors, IconCheck, IconLayers,
   IconEye, IconEyeOff, IconPlus, IconArrowUp, IconArrowDown, IconImage,
-  IconSliders
+  IconSliders, IconCrop, IconRotateCw, IconRotateCcw, IconScaling
 } from './components/Icons';
 
 // Magical Processing Overlay
@@ -106,8 +106,8 @@ const App: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null); // For adding image layers
   const replaceInputRef = useRef<HTMLInputElement>(null); // For replacing layer content
   
-  // Undo/Redo History (Snapshot of all layers)
-  const [history, setHistory] = useState<LayerSnapshot[][]>([]);
+  // Undo/Redo History (Snapshot of all layers + canvas size)
+  const [history, setHistory] = useState<HistoryState[]>([]);
   const [historyStep, setHistoryStep] = useState<number>(-1);
 
   // Camera State
@@ -125,6 +125,20 @@ const App: React.FC = () => {
   const [brushFalloff, setBrushFalloff] = useState(0); // 0-100
   const [showBrushSettings, setShowBrushSettings] = useState(false);
 
+  // Transform Tools State
+  const [isCropping, setIsCropping] = useState(false);
+  const [cropRect, setCropRect] = useState<{x:number, y:number, w:number, h:number} | null>(null);
+  // Crop Interaction State
+  const [cropInteraction, setCropInteraction] = useState<string | null>(null); // 'create' | 'move' | 'nw' | 'ne' | 'sw' | 'se'
+  const cropStartRef = useRef<{x: number, y: number, rect: {x:number, y:number, w:number, h:number}}>({x:0,y:0, rect:{x:0,y:0,w:0,h:0}});
+
+  const [showResizeDialog, setShowResizeDialog] = useState(false);
+  const [resizeWidth, setResizeWidth] = useState(0);
+  const [resizeHeight, setResizeHeight] = useState(0);
+  const [keepAspect, setKeepAspect] = useState(true);
+
+  const [showToolsMenu, setShowToolsMenu] = useState(false);
+
   const lastDrawPointRef = useRef<{x: number, y: number} | null>(null);
   const strokeDistanceRef = useRef(0);
 
@@ -132,6 +146,7 @@ const App: React.FC = () => {
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [isPanning, setIsPanning] = useState(false);
   const panStartRef = useRef({ x: 0, y: 0 });
+  const pinchRef = useRef<{ dist: number; center: {x:number, y:number}; startScale: number; startTranslate: {x:number, y:number}; startCoords: {x:number, y:number} } | null>(null);
 
   // Toolbar State
   const [toolbarPos, setToolbarPos] = useState({ x: 0, y: 0 });
@@ -285,8 +300,8 @@ const App: React.FC = () => {
       setHistory([]);
       setHistoryStep(-1);
       
-      // Save initial state
-      setTimeout(() => saveHistory([bgLayer]), 100);
+      // Save initial state. Need to pass width/height explicitly for first save.
+      setTimeout(() => saveHistory([bgLayer], width, height), 100);
       
       setTransform({ x: 0, y: 0, scale: 1 });
     };
@@ -494,9 +509,9 @@ const App: React.FC = () => {
   };
 
   // Undo/Redo Logic for Layers
-  const saveHistory = (currentLayers: Layer[] = layers) => {
+  const saveHistory = (currentLayers: Layer[] = layers, w: number = canvasSize.width, h: number = canvasSize.height) => {
     // Snapshot all layers
-    const snapshot: LayerSnapshot[] = currentLayers.map(l => {
+    const layerSnapshots: LayerSnapshot[] = currentLayers.map(l => {
       const ctx = l.canvas.getContext('2d');
       return {
         id: l.id,
@@ -507,9 +522,15 @@ const App: React.FC = () => {
         imageData: ctx!.getImageData(0, 0, l.canvas.width, l.canvas.height)
       };
     });
+    
+    // Store size in history too
+    const historyState: HistoryState = {
+        layers: layerSnapshots,
+        size: { width: w, height: h }
+    };
 
     const newHistory = history.slice(0, historyStep + 1);
-    newHistory.push(snapshot);
+    newHistory.push(historyState);
     
     if (newHistory.length > 10) { // Limit history depth
       newHistory.shift();
@@ -536,18 +557,31 @@ const App: React.FC = () => {
   };
 
   const restoreHistoryStep = (stepIndex: number) => {
-    const snapshot = history[stepIndex];
-    if (!snapshot) return;
+    const state = history[stepIndex];
+    if (!state) return;
+
+    // Restore canvas size
+    setCanvasSize(state.size);
+    if (canvasRef.current) {
+        canvasRef.current.width = state.size.width;
+        canvasRef.current.height = state.size.height;
+    }
 
     // Reconstruct layers from snapshot
-    const restoredLayers: Layer[] = snapshot.map(s => {
-      const layer = createLayer(s.name, canvasSize.width, canvasSize.height);
+    const restoredLayers: Layer[] = state.layers.map(s => {
+      const layer = createLayer(s.name, state.size.width, state.size.height);
       layer.id = s.id;
       layer.visible = s.visible;
       layer.opacity = s.opacity;
       layer.blendMode = s.blendMode;
       const ctx = layer.canvas.getContext('2d');
-      ctx?.putImageData(s.imageData, 0, 0);
+      if (ctx) {
+        if (s.imageData.width !== state.size.width || s.imageData.height !== state.size.height) {
+            layer.canvas.width = s.imageData.width;
+            layer.canvas.height = s.imageData.height;
+        }
+        ctx.putImageData(s.imageData, 0, 0);
+      }
       return layer;
     });
 
@@ -564,7 +598,6 @@ const App: React.FC = () => {
     setLayers(newLayers);
   };
   
-  // Debounced save for slider drag
   const handleLayerOpacityCommit = (id: string, opacity: number) => {
      const newLayers = layers.map(l => l.id === id ? { ...l, opacity } : l);
      saveHistory(newLayers);
@@ -618,6 +651,9 @@ const App: React.FC = () => {
   const handleWheel = (e: React.WheelEvent) => {
     if (layers.length === 0 || !canvasRef.current || !containerRef.current) return;
     
+    // Check if user is using a trackpad pinch gesture (ctrl key often set for this on browsers)
+    // For normal mouse wheel, e.ctrlKey might be true on some systems for pinch
+    
     const scaleAmount = -e.deltaY * 0.0015;
     const newScale = Math.min(Math.max(0.1, transform.scale * (1 + scaleAmount)), 20);
 
@@ -644,7 +680,7 @@ const App: React.FC = () => {
     });
   };
 
-  // --- Drawing Logic ---
+  // --- Drawing & Interaction Logic ---
   const getCanvasPoint = (e: React.MouseEvent | React.TouchEvent, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
     const clientX = ('touches' in e) ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
@@ -658,7 +694,6 @@ const App: React.FC = () => {
 
   const sprayPaint = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, size: number, flow: number) => {
     ctx.fillStyle = color;
-    // Flow affects density for spray
     const density = Math.floor(size * (flow / 20)); 
     for (let i = 0; i < density; i++) {
       const angle = Math.random() * 2 * Math.PI;
@@ -675,9 +710,78 @@ const App: React.FC = () => {
     ctx.globalAlpha = 1.0; 
   };
 
+  const getDistance = (t1: React.Touch, t2: React.Touch) => Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY);
+  const getCenter = (t1: React.Touch, t2: React.Touch) => ({ x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 });
+
   const handlePointerDown = (e: React.MouseEvent | React.TouchEvent) => {
     if (isDraggingToolbar) return;
 
+    // 1. Multi-touch (Pinch Zoom)
+    if ('touches' in e && e.touches.length === 2) {
+       const dist = getDistance(e.touches[0], e.touches[1]);
+       const center = getCenter(e.touches[0], e.touches[1]);
+       // Capture current container state relative to screen
+       const rect = containerRef.current?.getBoundingClientRect();
+       if (rect) {
+          pinchRef.current = {
+              dist,
+              center,
+              startScale: transform.scale,
+              startTranslate: { x: transform.x, y: transform.y },
+              startCoords: { x: center.x - rect.left, y: center.y - rect.top }
+          };
+       }
+       return;
+    }
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    // 2. Crop Interaction
+    if (isCropping) {
+        const { x, y } = getCanvasPoint(e, canvas);
+        const handleSize = 30 / transform.scale; // Visual size in canvas units
+        
+        if (cropRect) {
+            // Check corners
+            const corners = [
+                { id: 'nw', cx: cropRect.x, cy: cropRect.y },
+                { id: 'ne', cx: cropRect.x + cropRect.w, cy: cropRect.y },
+                { id: 'sw', cx: cropRect.x, cy: cropRect.y + cropRect.h },
+                { id: 'se', cx: cropRect.x + cropRect.w, cy: cropRect.y + cropRect.h },
+            ];
+
+            let hit = false;
+            for (const c of corners) {
+                if (Math.hypot(x - c.cx, y - c.cy) < handleSize) {
+                    setCropInteraction(c.id);
+                    cropStartRef.current = { x, y, rect: { ...cropRect } };
+                    hit = true;
+                    break;
+                }
+            }
+
+            if (!hit) {
+                // Check inside
+                if (x >= cropRect.x && x <= cropRect.x + cropRect.w && y >= cropRect.y && y <= cropRect.y + cropRect.h) {
+                    setCropInteraction('move');
+                    cropStartRef.current = { x, y, rect: { ...cropRect } };
+                } else {
+                    // Click outside -> Start new crop
+                     setCropInteraction('create');
+                     setCropRect({ x, y, w: 0, h: 0 });
+                     cropStartRef.current = { x, y, rect: { x, y, w:0, h:0 } };
+                }
+            }
+        } else {
+            setCropInteraction('create');
+            setCropRect({ x, y, w: 0, h: 0 });
+            cropStartRef.current = { x, y, rect: { x, y, w:0, h:0 } };
+        }
+        return;
+    }
+
+    // 3. Pan Tool
     if (brushType === 'pan') {
       setIsPanning(true);
       const clientX = ('touches' in e) ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
@@ -686,6 +790,7 @@ const App: React.FC = () => {
       return;
     }
 
+    // 4. Drawing
     if (!activeLayerId) {
         alert("Please select a layer to draw on.");
         return;
@@ -695,17 +800,12 @@ const App: React.FC = () => {
     if (!activeLayer || !activeLayer.visible) return;
 
     setIsDrawing(true);
-    strokeDistanceRef.current = 0; // Reset stroke distance
-
+    strokeDistanceRef.current = 0; 
     const ctx = activeLayer.canvas.getContext('2d');
     if (!ctx) return;
     
-    const mainCanvas = canvasRef.current;
-    if (!mainCanvas) return;
+    let { x, y } = getCanvasPoint(e, canvas);
     
-    let { x, y } = getCanvasPoint(e, mainCanvas);
-    
-    // Apply Start Jitter
     if (brushJitter > 0) {
       x += (Math.random() - 0.5) * brushJitter;
       y += (Math.random() - 0.5) * brushJitter;
@@ -717,20 +817,15 @@ const App: React.FC = () => {
     ctx.strokeStyle = brushColor;
     ctx.fillStyle = brushColor;
 
-    // Base Alpha Logic
     let alpha = 1.0;
     if (brushType === 'marker') alpha = 0.5;
-    
-    // Apply Flow (as opacity factor for non-spray)
-    if (brushType !== 'spray') {
-        alpha *= (brushFlow / 100);
-    }
+    if (brushType !== 'spray') alpha *= (brushFlow / 100);
     
     ctx.globalAlpha = alpha;
     
     if (brushType === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.globalAlpha = (brushFlow / 100); // Flow affects eraser strength
+      ctx.globalAlpha = (brushFlow / 100); 
     } else {
       ctx.globalCompositeOperation = 'source-over';
     }
@@ -750,6 +845,87 @@ const App: React.FC = () => {
   };
 
   const handlePointerMove = (e: React.MouseEvent | React.TouchEvent) => {
+    // 1. Multi-touch (Pinch Zoom)
+    if (pinchRef.current && 'touches' in e && e.touches.length === 2) {
+       e.preventDefault();
+       const dist = getDistance(e.touches[0], e.touches[1]);
+       const center = getCenter(e.touches[0], e.touches[1]);
+       
+       const scaleFactor = dist / pinchRef.current.dist;
+       const newScale = Math.min(Math.max(0.1, pinchRef.current.startScale * scaleFactor), 20);
+
+       // Simple Pan adjustment based on center movement
+       const dx = center.x - pinchRef.current.center.x;
+       const dy = center.y - pinchRef.current.center.y;
+       
+       // Refined: Pan should effectively pivot around the pinch center, but direct pan is intuitive.
+       setTransform(prev => ({
+           scale: newScale,
+           x: prev.x + dx,
+           y: prev.y + dy
+       }));
+
+       pinchRef.current.center = center;
+       pinchRef.current.dist = dist; // Continuous update prevents jumpiness
+       pinchRef.current.startScale = newScale; // Base next frame on this frame
+       return;
+    }
+
+    // 2. Crop Interaction
+    if (isCropping && cropInteraction && cropRect) {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const { x, y } = getCanvasPoint(e, canvas);
+        const start = cropStartRef.current;
+        const dx = x - start.x;
+        const dy = y - start.y;
+        
+        let newRect = { ...start.rect };
+
+        if (cropInteraction === 'create') {
+            newRect.w = dx;
+            newRect.h = dy;
+        } else if (cropInteraction === 'move') {
+            newRect.x += dx;
+            newRect.y += dy;
+        } else if (cropInteraction === 'se') {
+            newRect.w += dx;
+            newRect.h += dy;
+        } else if (cropInteraction === 'sw') {
+            newRect.x += dx;
+            newRect.w -= dx;
+            newRect.h += dy;
+        } else if (cropInteraction === 'ne') {
+            newRect.y += dy;
+            newRect.w += dx;
+            newRect.h -= dy;
+        } else if (cropInteraction === 'nw') {
+            newRect.x += dx;
+            newRect.y += dy;
+            newRect.w -= dx;
+            newRect.h -= dy;
+        }
+
+        // Normalize negative width/height
+        let finalX = newRect.x;
+        let finalY = newRect.y;
+        let finalW = newRect.w;
+        let finalH = newRect.h;
+
+        if (finalW < 0) {
+            finalX += finalW;
+            finalW = Math.abs(finalW);
+        }
+        if (finalH < 0) {
+            finalY += finalH;
+            finalH = Math.abs(finalH);
+        }
+
+        setCropRect({ x: finalX, y: finalY, w: finalW, h: finalH });
+        return;
+    }
+
+    // 3. Pan
     if (isPanning) {
       e.preventDefault(); 
       const clientX = ('touches' in e) ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
@@ -762,6 +938,7 @@ const App: React.FC = () => {
       return;
     }
 
+    // 4. Draw
     if (!isDrawing) return;
     
     const activeLayer = layers.find(l => l.id === activeLayerId);
@@ -774,13 +951,11 @@ const App: React.FC = () => {
 
     let { x, y } = getCanvasPoint(e, mainCanvas);
 
-    // Apply Jitter
     if (brushJitter > 0) {
        x += (Math.random() - 0.5) * brushJitter;
        y += (Math.random() - 0.5) * brushJitter;
     }
     
-    // Calculate Falloff
     if (lastDrawPointRef.current) {
         const dx = x - lastDrawPointRef.current.x;
         const dy = y - lastDrawPointRef.current.y;
@@ -789,23 +964,16 @@ const App: React.FC = () => {
 
     let alpha = 1.0;
     if (brushType === 'marker') alpha = 0.5;
+    if (brushType !== 'spray') alpha *= (brushFlow / 100);
 
-    // Apply Flow
-    if (brushType !== 'spray') {
-        alpha *= (brushFlow / 100);
-    }
-
-    // Apply Falloff
     if (brushFalloff > 0) {
-        // Falloff scale: 100 -> fade out quickly, 1 -> fade out slowly
-        // let's say max distance is 2000px for falloff=1
         const maxDist = 3000 / (brushFalloff * 0.5 || 1); 
         const fade = Math.max(0, 1 - (strokeDistanceRef.current / maxDist));
         alpha *= fade;
     }
     
     ctx.globalAlpha = alpha;
-    if (brushType === 'eraser') ctx.globalAlpha = alpha; // ensure eraser uses correct alpha
+    if (brushType === 'eraser') ctx.globalAlpha = alpha; 
 
     if (brushType === 'spray') {
       sprayPaint(ctx, x, y, brushColor, brushSize, brushFlow);
@@ -824,6 +992,13 @@ const App: React.FC = () => {
   };
 
   const handlePointerUp = () => {
+    pinchRef.current = null;
+    
+    if (isCropping) {
+        setCropInteraction(null);
+        return;
+    }
+
     if (isPanning) {
       setIsPanning(false);
     }
@@ -839,6 +1014,111 @@ const App: React.FC = () => {
       }
       saveHistory(); 
     }
+  };
+
+  // --- Transformation Logic ---
+
+  const handleRotateCanvas = (degrees: number) => {
+     // For +/- 90 degrees, dimensions flip
+     const newW = canvasSize.height;
+     const newH = canvasSize.width;
+     
+     const newLayers = layers.map(l => {
+         const newCanvas = document.createElement('canvas');
+         newCanvas.width = newW;
+         newCanvas.height = newH;
+         const ctx = newCanvas.getContext('2d');
+         if (ctx) {
+             ctx.save();
+             ctx.translate(newW / 2, newH / 2);
+             ctx.rotate(degrees * Math.PI / 180);
+             // Draw source centered
+             ctx.drawImage(l.canvas, -l.canvas.width/2, -l.canvas.height/2);
+             ctx.restore();
+         }
+         return { ...l, canvas: newCanvas };
+     });
+
+     setCanvasSize({ width: newW, height: newH });
+     if (canvasRef.current) {
+         canvasRef.current.width = newW;
+         canvasRef.current.height = newH;
+     }
+     setLayers(newLayers);
+     saveHistory(newLayers, newW, newH);
+  };
+
+  const applyCrop = () => {
+      if (!cropRect || cropRect.w === 0 || cropRect.h === 0) {
+          setIsCropping(false);
+          setCropRect(null);
+          return;
+      }
+
+      const newW = Math.round(cropRect.w);
+      const newH = Math.round(cropRect.h);
+      const cropX = Math.round(cropRect.x);
+      const cropY = Math.round(cropRect.y);
+
+      const newLayers = layers.map(l => {
+          const newCanvas = document.createElement('canvas');
+          newCanvas.width = newW;
+          newCanvas.height = newH;
+          const ctx = newCanvas.getContext('2d');
+          if (ctx) {
+              // Draw the slice of the original canvas onto new canvas
+              ctx.drawImage(l.canvas, cropX, cropY, newW, newH, 0, 0, newW, newH);
+          }
+          return { ...l, canvas: newCanvas };
+      });
+
+      setCanvasSize({ width: newW, height: newH });
+      if (canvasRef.current) {
+          canvasRef.current.width = newW;
+          canvasRef.current.height = newH;
+      }
+      setLayers(newLayers);
+      saveHistory(newLayers, newW, newH);
+      
+      setIsCropping(false);
+      setCropRect(null);
+      setCropInteraction(null);
+  };
+
+  const openResizeDialog = () => {
+      setResizeWidth(canvasSize.width);
+      setResizeHeight(canvasSize.height);
+      setShowResizeDialog(true);
+  };
+
+  const applyResize = () => {
+      const newW = Math.round(resizeWidth);
+      const newH = Math.round(resizeHeight);
+      
+      if (newW <= 0 || newH <= 0) return;
+
+      const newLayers = layers.map(l => {
+         const newCanvas = document.createElement('canvas');
+         newCanvas.width = newW;
+         newCanvas.height = newH;
+         const ctx = newCanvas.getContext('2d');
+         // High quality scaling
+         if (ctx) {
+             ctx.imageSmoothingEnabled = true;
+             ctx.imageSmoothingQuality = 'high';
+             ctx.drawImage(l.canvas, 0, 0, newW, newH);
+         }
+         return { ...l, canvas: newCanvas };
+      });
+
+      setCanvasSize({ width: newW, height: newH });
+      if (canvasRef.current) {
+          canvasRef.current.width = newW;
+          canvasRef.current.height = newH;
+      }
+      setLayers(newLayers);
+      saveHistory(newLayers, newW, newH);
+      setShowResizeDialog(false);
   };
 
   // --- Layer Management ---
@@ -1006,6 +1286,57 @@ const App: React.FC = () => {
         </div>
       )}
 
+      {/* Resize Dialog */}
+      {showResizeDialog && (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur flex items-center justify-center p-4">
+              <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+                  <h3 className="text-lg font-bold text-white mb-4">Resize Image</h3>
+                  <div className="space-y-4">
+                      <div className="flex gap-4">
+                          <div className="flex-1">
+                              <label className="text-xs text-gray-400 uppercase font-bold">Width</label>
+                              <input 
+                                type="number" 
+                                value={resizeWidth}
+                                onChange={(e) => {
+                                    const val = parseInt(e.target.value) || 0;
+                                    setResizeWidth(val);
+                                    if(keepAspect && canvasSize.width > 0) {
+                                        setResizeHeight(Math.round(val * (canvasSize.height / canvasSize.width)));
+                                    }
+                                }}
+                                className="w-full bg-gray-800 border border-gray-700 rounded-lg p-2 text-white"
+                              />
+                          </div>
+                          <div className="flex-1">
+                              <label className="text-xs text-gray-400 uppercase font-bold">Height</label>
+                              <input 
+                                type="number" 
+                                value={resizeHeight}
+                                onChange={(e) => {
+                                    const val = parseInt(e.target.value) || 0;
+                                    setResizeHeight(val);
+                                    if(keepAspect && canvasSize.height > 0) {
+                                        setResizeWidth(Math.round(val * (canvasSize.width / canvasSize.height)));
+                                    }
+                                }}
+                                className="w-full bg-gray-800 border border-gray-700 rounded-lg p-2 text-white"
+                              />
+                          </div>
+                      </div>
+                      <label className="flex items-center gap-2 cursor-pointer">
+                          <input type="checkbox" checked={keepAspect} onChange={(e) => setKeepAspect(e.target.checked)} className="rounded bg-gray-700 border-gray-600 text-indigo-500 focus:ring-indigo-500" />
+                          <span className="text-sm text-gray-300">Lock Aspect Ratio</span>
+                      </label>
+                      <div className="flex gap-2 pt-2">
+                          <button onClick={() => setShowResizeDialog(false)} className="flex-1 py-2 bg-gray-800 rounded-lg text-gray-300 hover:bg-gray-700">Cancel</button>
+                          <button onClick={applyResize} className="flex-1 py-2 bg-indigo-600 rounded-lg text-white font-bold hover:bg-indigo-500">Apply</button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
       {/* Header */}
       <header className="p-4 border-b border-gray-800 flex items-center justify-between bg-black/80 backdrop-blur-md z-30 shrink-0">
         <div className="flex items-center gap-2">
@@ -1024,11 +1355,11 @@ const App: React.FC = () => {
         {/* MODE: GENERATE */}
         {mode === AppMode.GENERATE && (
           <div className="flex-1 overflow-y-auto p-4 animate-fade-in pb-32">
+            {/* ... Generate UI Code ... */}
             <div className="max-w-5xl mx-auto space-y-6">
               <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800 shadow-xl">
                 <h2 className="text-2xl font-bold mb-4 text-white">Create</h2>
                 <p className="text-gray-400 mb-6 text-sm">Gemini 3.0 Pro Image Preview</p>
-                
                 <div className="space-y-4">
                   <textarea
                     value={genPrompt}
@@ -1036,7 +1367,6 @@ const App: React.FC = () => {
                     placeholder="Describe the image you want to create..."
                     className="w-full bg-gray-950 border border-gray-700 rounded-xl p-4 focus:ring-2 focus:ring-purple-500 focus:outline-none transition-all resize-none h-32 text-lg"
                   />
-
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                       <label className="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2">Aspect Ratio</label>
@@ -1065,7 +1395,6 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   </div>
-
                   <button
                     onClick={handleGenerate}
                     disabled={isGenerating || !genPrompt}
@@ -1075,9 +1404,7 @@ const App: React.FC = () => {
                   </button>
                 </div>
               </div>
-
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Generation Placeholder */}
                 {isGenerating && (
                     <div className="aspect-square rounded-2xl overflow-hidden relative bg-gray-900 border border-gray-800 shadow-2xl flex items-center justify-center">
                         <ProcessingOverlay text="Dreaming..." />
@@ -1145,7 +1472,7 @@ const App: React.FC = () => {
                     ref={containerRef}
                     onWheel={handleWheel}
                     className="flex-1 bg-[#121212] relative overflow-hidden flex items-center justify-center touch-none select-none w-full"
-                    style={{ cursor: brushType === 'pan' ? (isPanning ? 'grabbing' : 'grab') : 'crosshair' }}
+                    style={{ cursor: isCropping ? (cropInteraction && cropInteraction !== 'create' && cropInteraction !== 'move' ? 'move' : 'crosshair') : (brushType === 'pan' ? (isPanning ? 'grabbing' : 'grab') : 'crosshair') }}
                   >
                     <div 
                       style={{ 
@@ -1159,26 +1486,51 @@ const App: React.FC = () => {
                         transition: isPanning ? 'none' : 'transform 0.1s ease-out'
                       }}
                     >
-                       <canvas 
-                        ref={canvasRef}
-                        width={canvasSize.width}
-                        height={canvasSize.height}
-                        onMouseDown={handlePointerDown}
-                        onMouseMove={handlePointerMove}
-                        onMouseUp={handlePointerUp}
-                        onMouseLeave={handlePointerUp}
-                        onTouchStart={handlePointerDown}
-                        onTouchMove={handlePointerMove}
-                        onTouchEnd={handlePointerUp}
-                        className="shadow-2xl border border-gray-800 bg-gray-900"
-                        style={{ maxWidth: 'unset' }} // Override max-w-full to allow zoom
-                      />
+                       <div className="relative" style={{ width: canvasSize.width, height: canvasSize.height }}>
+                           <canvas 
+                            ref={canvasRef}
+                            width={canvasSize.width}
+                            height={canvasSize.height}
+                            onMouseDown={handlePointerDown}
+                            onMouseMove={handlePointerMove}
+                            onMouseUp={handlePointerUp}
+                            onMouseLeave={handlePointerUp}
+                            onTouchStart={handlePointerDown}
+                            onTouchMove={handlePointerMove}
+                            onTouchEnd={handlePointerUp}
+                            className="shadow-2xl border border-gray-800 bg-gray-900 absolute inset-0"
+                            style={{ maxWidth: 'unset' }} 
+                          />
+                          {/* Crop Overlay */}
+                          {isCropping && cropRect && (
+                              <div 
+                                className="absolute pointer-events-none border-2 border-white shadow-[0_0_0_9999px_rgba(0,0,0,0.7)]"
+                                style={{
+                                    left: cropRect.x,
+                                    top: cropRect.y,
+                                    width: cropRect.w,
+                                    height: cropRect.h
+                                }}
+                              >
+                                  <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 opacity-30">
+                                      {[...Array(9)].map((_, i) => <div key={i} className="border-r border-b border-white last:border-0 [&:nth-child(3n)]:border-r-0 [&:nth-child(n+7)]:border-b-0"></div>)}
+                                  </div>
+                                  
+                                  {/* Resize Handles */}
+                                  {/* Corners */}
+                                  <div className="absolute -top-1.5 -left-1.5 w-3 h-3 bg-white border border-gray-500 shadow-sm"></div>
+                                  <div className="absolute -top-1.5 -right-1.5 w-3 h-3 bg-white border border-gray-500 shadow-sm"></div>
+                                  <div className="absolute -bottom-1.5 -left-1.5 w-3 h-3 bg-white border border-gray-500 shadow-sm"></div>
+                                  <div className="absolute -bottom-1.5 -right-1.5 w-3 h-3 bg-white border border-gray-500 shadow-sm"></div>
+                              </div>
+                          )}
+                       </div>
                     </div>
 
-                    {/* Editor Processing Overlay (Scoped to Canvas Container) */}
+                    {/* Editor Processing Overlay */}
                     {isEditing && <ProcessingOverlay text="Weaving Magic..." />}
                     
-                    {/* Floating Minimalist Zoom Controls - Right Side */}
+                    {/* Floating Zoom Controls */}
                     <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 p-1.5 bg-black/60 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl z-20">
                       <button onClick={handleZoomIn} className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 rounded-full transition-colors">
                         <IconZoomIn className="w-5 h-5" />
@@ -1194,31 +1546,29 @@ const App: React.FC = () => {
                       </button>
                     </div>
 
-                    {/* Floating Layers Panel (Right Side, above Zoom) */}
+                    {/* Floating Layers Panel */}
                     <div 
                       onWheel={(e) => e.stopPropagation()}
                       className={`absolute right-4 top-4 z-30 transition-all ${showLayerPanel ? 'w-72' : 'w-auto'}`}
                     >
-                        {/* Toggle Button */}
+                         {/* Toggle Button */}
                         {!showLayerPanel && (
                              <button onClick={() => setShowLayerPanel(true)} className="p-3 bg-black/80 backdrop-blur-md border border-white/10 rounded-xl text-white shadow-xl hover:bg-white/10">
                                 <IconLayers className="w-5 h-5" />
                              </button>
                         )}
-
-                        {/* Panel Content */}
+                        {/* Panel Content (Same as previous) */}
                         {showLayerPanel && (
-                            <div className="bg-black/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[60vh]">
+                           <div className="bg-black/90 backdrop-blur-xl border border-white/10 rounded-2xl shadow-2xl flex flex-col overflow-hidden max-h-[60vh]">
                                 <div className="p-3 border-b border-white/10 flex justify-between items-center bg-white/5">
                                     <h3 className="text-xs font-bold uppercase tracking-wider text-gray-400 flex items-center gap-2">
                                         <IconLayers className="w-4 h-4" /> Layers
                                     </h3>
                                     <button onClick={() => setShowLayerPanel(false)} className="text-gray-500 hover:text-white"><IconX className="w-4 h-4"/></button>
                                 </div>
-
+                                
                                 {activeLayer && (
                                   <div className="p-3 border-b border-white/10 bg-white/5 space-y-3">
-                                      {/* Opacity Control */}
                                       <div className="space-y-1">
                                           <div className="flex justify-between items-center">
                                               <label className="text-[10px] font-bold text-gray-500 uppercase">Opacity</label>
@@ -1234,7 +1584,6 @@ const App: React.FC = () => {
                                           />
                                       </div>
                                       
-                                      {/* Blend Mode Dropdown */}
                                       <div className="space-y-1 relative">
                                           <label className="text-[10px] font-bold text-gray-500 uppercase">Blend Mode</label>
                                           <div className="relative">
@@ -1245,7 +1594,6 @@ const App: React.FC = () => {
                                                   <span>{BLEND_MODES.find(m => m.value === (previewBlendMode || activeLayer.blendMode))?.label}</span>
                                                   <IconArrowDown className="w-3 h-3 text-gray-400"/>
                                               </button>
-                                              
                                               {showBlendMenu && (
                                                   <div className="absolute top-full left-0 right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-50 max-h-48 overflow-y-auto">
                                                       {BLEND_MODES.map(mode => (
@@ -1264,9 +1612,7 @@ const App: React.FC = () => {
                                               )}
                                           </div>
                                       </div>
-
-                                      {/* Replace Content */}
-                                      <label className="flex items-center gap-2 text-xs text-gray-400 hover:text-white cursor-pointer py-1">
+                                       <label className="flex items-center gap-2 text-xs text-gray-400 hover:text-white cursor-pointer py-1">
                                          <IconUpload className="w-3 h-3" /> Replace Content
                                          <input 
                                             type="file" 
@@ -1278,7 +1624,6 @@ const App: React.FC = () => {
                                       </label>
                                   </div>
                                 )}
-                                
                                 <div className="overflow-y-auto flex-col-reverse flex p-2 gap-2">
                                     {layers.map((layer, index) => (
                                         <div 
@@ -1292,16 +1637,11 @@ const App: React.FC = () => {
                                             >
                                                 {layer.visible ? <IconEye className="w-4 h-4" /> : <IconEyeOff className="w-4 h-4" />}
                                             </button>
-                                            
-                                            {/* Preview Thumbnail */}
                                             <LayerThumbnail layer={layer} />
-
                                             <div className="flex-1 min-w-0">
                                               <p className="text-xs font-medium text-gray-200 truncate select-none">{layer.name}</p>
                                               <p className="text-[10px] text-gray-500 truncate">{BLEND_MODES.find(m => m.value === layer.blendMode)?.label}</p>
                                             </div>
-                                            
-                                            {/* Layer Controls */}
                                             {activeLayerId === layer.id && (
                                                 <div className="flex flex-col gap-0.5">
                                                    <button onClick={(e) => { e.stopPropagation(); handleMoveLayer(index, 'up'); }} className="text-gray-500 hover:text-white disabled:opacity-30" disabled={index === layers.length - 1}><IconArrowUp className="w-3 h-3" /></button>
@@ -1331,7 +1671,7 @@ const App: React.FC = () => {
                                         />
                                     </label>
                                 </div>
-                            </div>
+                           </div>
                         )}
                     </div>
 
@@ -1346,7 +1686,7 @@ const App: React.FC = () => {
                         style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }}
                         className={`absolute left-4 top-4 w-auto bg-black/90 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing touch-none z-30 transition-all ${isToolbarMinimized ? 'p-2' : 'p-3'}`}
                     >
-                        {/* Header with Minimize & Save */}
+                        {/* Header */}
                         <div className="flex justify-between items-center px-1 gap-2" onPointerDown={(e) => e.stopPropagation()}>
                            <div className="p-1 cursor-grab active:cursor-grabbing" onPointerDown={handleDragStart}>
                               <IconMove className="w-4 h-4 text-gray-500" />
@@ -1356,55 +1696,77 @@ const App: React.FC = () => {
                                <button onClick={saveSession} className="text-gray-400 hover:text-green-400">
                                   <IconSave className="w-4 h-4" />
                                </button>
-                               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
-                                  Save Session
-                               </div>
                              </div>
                              <div className="relative group">
                                <button onClick={() => setIsToolbarMinimized(!isToolbarMinimized)} className="text-gray-400 hover:text-white">
                                   {isToolbarMinimized ? <IconMaximize className="w-4 h-4"/> : <IconMinimize className="w-4 h-4" />}
                                </button>
-                               <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
-                                  {isToolbarMinimized ? 'Maximize' : 'Minimize'}
-                               </div>
                              </div>
                            </div>
                         </div>
 
-                        {!isToolbarMinimized && (
+                        {!isToolbarMinimized && !isCropping && (
                           <div onPointerDown={(e) => e.stopPropagation()} className="space-y-4 animate-fade-in w-64">
-                            {/* Tools Grid */}
+                            {/* Main Tool Grid */}
                             <div className="grid grid-cols-4 gap-2">
-                              <BrushBtn type="pan" icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} label="Pan Tool" />
-                              <BrushBtn type="pen" icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} label="Pen Tool" />
-                              <BrushBtn type="spray" icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} label="Spray Paint" />
-                              <BrushBtn type="marker" icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} label="Marker" />
+                              <BrushBtn type="pan" icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} label="Pan" />
+                              <BrushBtn type="pen" icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} label="Pen" />
                               <BrushBtn type="eraser" icon={IconEraser} active={brushType === 'eraser'} onClick={() => setBrushType('eraser')} label="Eraser" />
                               
                               <div className="col-span-1 relative group w-full">
-                                <button onClick={handleClearLayer} className="w-full p-2.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 flex items-center justify-center">
-                                  <IconTrash className="w-5 h-5" />
-                                </button>
-                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
-                                  Clear Layer
-                                </div>
-                              </div>
-                              
-                              {/* Settings Toggle */}
-                              <div className="col-span-1 relative group w-full">
                                 <button 
-                                  onClick={() => setShowBrushSettings(!showBrushSettings)} 
-                                  className={`w-full p-2.5 rounded-lg transition-all flex items-center justify-center ${showBrushSettings ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
+                                  onClick={() => setShowToolsMenu(!showToolsMenu)} 
+                                  className={`w-full p-2.5 rounded-lg transition-all flex items-center justify-center ${showToolsMenu ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
                                 >
-                                  <IconSliders className="w-5 h-5" />
+                                  <IconCrop className="w-5 h-5" />
                                 </button>
                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
-                                  Brush Settings
+                                  Edit Tools
                                 </div>
                               </div>
                             </div>
+
+                            {/* Secondary Tools Menu */}
+                            {showToolsMenu && (
+                                <div className="grid grid-cols-4 gap-2 p-2 bg-white/5 rounded-xl border border-white/5 animate-fade-in">
+                                    <button onClick={() => { setIsCropping(true); setShowToolsMenu(false); }} className="p-2 bg-gray-800 rounded-lg text-gray-400 hover:text-white flex justify-center" title="Crop">
+                                        <IconCrop className="w-5 h-5" />
+                                    </button>
+                                    <button onClick={openResizeDialog} className="p-2 bg-gray-800 rounded-lg text-gray-400 hover:text-white flex justify-center" title="Resize">
+                                        <IconScaling className="w-5 h-5" />
+                                    </button>
+                                    <button onClick={() => handleRotateCanvas(-90)} className="p-2 bg-gray-800 rounded-lg text-gray-400 hover:text-white flex justify-center" title="Rotate Left">
+                                        <IconRotateCcw className="w-5 h-5" />
+                                    </button>
+                                    <button onClick={() => handleRotateCanvas(90)} className="p-2 bg-gray-800 rounded-lg text-gray-400 hover:text-white flex justify-center" title="Rotate Right">
+                                        <IconRotateCw className="w-5 h-5" />
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Brushes */}
+                            <div className="grid grid-cols-4 gap-2">
+                                <BrushBtn type="spray" icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} label="Spray" />
+                                <BrushBtn type="marker" icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} label="Marker" />
+                                <div className="col-span-1 relative group w-full">
+                                    <button onClick={handleClearLayer} className="w-full p-2.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 flex items-center justify-center">
+                                    <IconTrash className="w-5 h-5" />
+                                    </button>
+                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                    Clear
+                                    </div>
+                                </div>
+                                <div className="col-span-1 relative group w-full">
+                                    <button 
+                                    onClick={() => setShowBrushSettings(!showBrushSettings)} 
+                                    className={`w-full p-2.5 rounded-lg transition-all flex items-center justify-center ${showBrushSettings ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
+                                    >
+                                    <IconSliders className="w-5 h-5" />
+                                    </button>
+                                </div>
+                            </div>
                             
-                            {/* Primary Size Slider */}
+                            {/* Brush Size */}
                             <div className="space-y-1">
                                 <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
                                    <span>Size</span>
@@ -1417,7 +1779,7 @@ const App: React.FC = () => {
                                 />
                              </div>
 
-                             {/* Collapsible Brush Settings */}
+                             {/* Brush Settings */}
                              {showBrushSettings && (
                                 <div className="p-3 bg-white/5 rounded-xl space-y-3 animate-fade-in border border-white/5">
                                     <div className="space-y-1">
@@ -1442,24 +1804,12 @@ const App: React.FC = () => {
                                             className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-pink-500"
                                         />
                                     </div>
-                                    <div className="space-y-1">
-                                        <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
-                                            <span>Opacity Falloff</span>
-                                            <span>{brushFalloff}</span>
-                                        </div>
-                                        <input 
-                                            type="range" min="0" max="100" value={brushFalloff}
-                                            onChange={(e) => setBrushFalloff(parseInt(e.target.value))}
-                                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
-                                        />
-                                    </div>
                                 </div>
                              )}
 
-                            {/* Remove Background Tool */}
+                            {/* Remove Background */}
                             <button 
                                 onClick={handleRemoveBackground}
-                                title="Isolate subject from background"
                                 className="w-full p-3 bg-indigo-600/20 hover:bg-indigo-600/40 text-indigo-300 rounded-lg flex items-center justify-center gap-2 border border-indigo-500/30 transition-all"
                             >
                                 <IconScissors className="w-4 h-4" />
@@ -1468,21 +1818,17 @@ const App: React.FC = () => {
 
                             <div className="h-px bg-white/10"></div>
                             
+                            {/* Undo/Redo */}
                             <div className="flex justify-between gap-1">
                                <div className="relative group flex-1">
                                  <button onClick={handleUndo} disabled={historyStep <= 0} className="w-full p-2 text-gray-400 hover:text-white disabled:opacity-30 flex justify-center"><IconUndo /></button>
-                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
-                                    Undo
-                                 </div>
                                </div>
                                <div className="relative group flex-1">
                                  <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="w-full p-2 text-gray-400 hover:text-white disabled:opacity-30 flex justify-center"><IconRedo /></button>
-                                 <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
-                                    Redo
-                                 </div>
                                </div>
                             </div>
                              
+                             {/* Colors */}
                              <div className="grid grid-cols-4 gap-2">
                                 {['#FFFFFF', '#000000', '#FF0055', '#00E5FF', '#FFD700', '#32CD32', '#FF4500', '#9370DB'].map(color => (
                                   <button 
@@ -1495,6 +1841,30 @@ const App: React.FC = () => {
                              </div>
                           </div>
                         )}
+                        
+                        {/* Crop Mode Controls */}
+                        {isCropping && (
+                            <div onPointerDown={(e) => e.stopPropagation()} className="w-64 space-y-3 animate-fade-in">
+                                <div className="text-center text-xs font-bold text-white uppercase tracking-wider mb-2">Crop Mode</div>
+                                <div className="text-center text-[10px] text-gray-400 mb-2">Drag handles to adjust crop area</div>
+                                <div className="flex gap-2">
+                                    <button 
+                                        onClick={() => { setIsCropping(false); setCropRect(null); setCropInteraction(null); }}
+                                        className="flex-1 py-2 bg-gray-800 rounded-lg text-gray-300 font-bold hover:bg-gray-700"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button 
+                                        onClick={applyCrop}
+                                        disabled={!cropRect || cropRect.w === 0}
+                                        className="flex-1 py-2 bg-indigo-600 rounded-lg text-white font-bold hover:bg-indigo-500 disabled:opacity-50"
+                                    >
+                                        Apply
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+
                         {isToolbarMinimized && (
                            <div className="flex justify-center py-2" onPointerDown={(e) => e.stopPropagation()}>
                               <div className="w-6 h-6 rounded-full" style={{background: brushColor, border: '1px solid white'}}></div>
@@ -1502,55 +1872,50 @@ const App: React.FC = () => {
                         )}
                     </div>
 
-                    {/* Modern Floating "Magic Bar" Input */}
-                    <div className="absolute bottom-24 md:bottom-8 left-0 right-0 z-40 px-4 flex justify-center pointer-events-none">
-                      <div className="w-full max-w-2xl pointer-events-auto">
-                         <div className="relative group">
-                            {/* Glow Effect */}
-                            <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full opacity-20 group-hover:opacity-50 blur transition duration-500"></div>
-                            
-                            {/* Glass Container */}
-                            <div className="relative flex items-center gap-2 bg-gray-950/80 backdrop-blur-2xl border border-white/10 rounded-full p-2 pl-2 shadow-2xl">
-                               
-                               <button 
-                                 onClick={() => {setLayers([]); setHistory([]); setHistoryStep(-1);}} 
-                                 className="w-10 h-10 flex items-center justify-center rounded-full text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
-                                 title="Cancel"
-                               >
-                                 <IconX className="w-5 h-5" />
-                               </button>
-
-                               <div className="h-6 w-px bg-white/10 mx-1"></div>
-
-                               <input
-                                type="text"
-                                value={editPrompt}
-                                onChange={(e) => setEditPrompt(e.target.value)}
-                                placeholder="Describe the magic change..."
-                                className="flex-1 bg-transparent border-none outline-none text-white placeholder-gray-500 text-sm md:text-base font-medium min-w-0"
-                              />
-                              
-                              <button
-                                onClick={handleMagicEdit}
-                                disabled={isEditing || !editPrompt}
-                                className={`
-                                    h-10 px-6 rounded-full font-bold text-white shadow-lg transition-all flex items-center gap-2
-                                    ${isEditing || !editPrompt ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-500 hover:shadow-indigo-500/25 active:scale-95'}
-                                `}
-                              >
-                                 {isEditing ? (
-                                   <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"/>
-                                 ) : (
-                                   <>
-                                     <span className="hidden sm:inline">Magic</span>
-                                     <IconWand className="w-4 h-4" />
-                                   </>
-                                 )}
-                              </button>
-                            </div>
-                         </div>
+                    {/* Magic Bar */}
+                    {!isCropping && (
+                      <div className="absolute bottom-24 md:bottom-8 left-0 right-0 z-40 px-4 flex justify-center pointer-events-none">
+                        <div className="w-full max-w-2xl pointer-events-auto">
+                           <div className="relative group">
+                              <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full opacity-20 group-hover:opacity-50 blur transition duration-500"></div>
+                              <div className="relative flex items-center gap-2 bg-gray-950/80 backdrop-blur-2xl border border-white/10 rounded-full p-2 pl-2 shadow-2xl">
+                                 <button 
+                                   onClick={() => {setLayers([]); setHistory([]); setHistoryStep(-1);}} 
+                                   className="w-10 h-10 flex items-center justify-center rounded-full text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
+                                   title="Cancel"
+                                 >
+                                   <IconX className="w-5 h-5" />
+                                 </button>
+                                 <div className="h-6 w-px bg-white/10 mx-1"></div>
+                                 <input
+                                  type="text"
+                                  value={editPrompt}
+                                  onChange={(e) => setEditPrompt(e.target.value)}
+                                  placeholder="Describe the magic change..."
+                                  className="flex-1 bg-transparent border-none outline-none text-white placeholder-gray-500 text-sm md:text-base font-medium min-w-0"
+                                />
+                                <button
+                                  onClick={handleMagicEdit}
+                                  disabled={isEditing || !editPrompt}
+                                  className={`
+                                      h-10 px-6 rounded-full font-bold text-white shadow-lg transition-all flex items-center gap-2
+                                      ${isEditing || !editPrompt ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-500 hover:shadow-indigo-500/25 active:scale-95'}
+                                  `}
+                                >
+                                   {isEditing ? (
+                                     <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"/>
+                                   ) : (
+                                     <>
+                                       <span className="hidden sm:inline">Magic</span>
+                                       <IconWand className="w-4 h-4" />
+                                     </>
+                                   )}
+                                </button>
+                              </div>
+                           </div>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
 
                   {/* Results Overlay */}
