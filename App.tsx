@@ -8,7 +8,8 @@ import {
   IconRedo, IconCamera, IconX, IconHistory, IconMove,
   IconHand, IconZoomIn, IconZoomOut, IconMinimize, IconMaximize,
   IconSave, IconRestore, IconScissors, IconCheck, IconLayers,
-  IconEye, IconEyeOff, IconPlus, IconArrowUp, IconArrowDown, IconImage
+  IconEye, IconEyeOff, IconPlus, IconArrowUp, IconArrowDown, IconImage,
+  IconSliders
 } from './components/Icons';
 
 // Magical Processing Overlay
@@ -51,6 +52,30 @@ const BLEND_MODES: { value: GlobalCompositeOperation; label: string }[] = [
   { value: 'luminosity', label: 'Luminosity' },
 ];
 
+const LayerThumbnail = ({ layer }: { layer: Layer }) => {
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    
+    useEffect(() => {
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext('2d');
+        if (canvas && ctx && layer.canvas) {
+            ctx.clearRect(0,0, canvas.width, canvas.height);
+            // Draw a checkerboard background first
+            const s = 4;
+            for(let x=0; x<canvas.width; x+=s) {
+                for(let y=0; y<canvas.height; y+=s) {
+                    ctx.fillStyle = (x/s + y/s) % 2 === 0 ? '#333' : '#444';
+                    ctx.fillRect(x,y,s,s);
+                }
+            }
+            // Draw the source canvas scaled down
+            ctx.drawImage(layer.canvas, 0, 0, canvas.width, canvas.height);
+        }
+    }); // Update on every render
+
+    return <canvas ref={canvasRef} width={40} height={40} className="w-8 h-8 rounded border border-white/10 bg-gray-800 object-cover flex-shrink-0" />;
+};
+
 const App: React.FC = () => {
   const [mode, setMode] = useState<AppMode>(AppMode.GENERATE);
   
@@ -72,9 +97,14 @@ const App: React.FC = () => {
   const [showLayerPanel, setShowLayerPanel] = useState(false);
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 }); // Workspace size
   
+  // Layer Blend Preview
+  const [previewBlendMode, setPreviewBlendMode] = useState<GlobalCompositeOperation | null>(null);
+  const [showBlendMenu, setShowBlendMenu] = useState(false);
+
   const canvasRef = useRef<HTMLCanvasElement>(null); // Main composite canvas
   const containerRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null); // For adding image layers
+  const replaceInputRef = useRef<HTMLInputElement>(null); // For replacing layer content
   
   // Undo/Redo History (Snapshot of all layers)
   const [history, setHistory] = useState<LayerSnapshot[][]>([]);
@@ -90,7 +120,13 @@ const App: React.FC = () => {
   const [brushColor, setBrushColor] = useState('#FF0055');
   const [brushSize, setBrushSize] = useState(20);
   const [brushType, setBrushType] = useState<'pen' | 'spray' | 'marker' | 'eraser' | 'pan'>('pen');
+  const [brushJitter, setBrushJitter] = useState(0); // 0-50
+  const [brushFlow, setBrushFlow] = useState(100); // 1-100
+  const [brushFalloff, setBrushFalloff] = useState(0); // 0-100
+  const [showBrushSettings, setShowBrushSettings] = useState(false);
+
   const lastDrawPointRef = useRef<{x: number, y: number} | null>(null);
+  const strokeDistanceRef = useRef(0);
 
   // Zoom & Pan State
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
@@ -166,7 +202,14 @@ const App: React.FC = () => {
     layers.forEach(layer => {
       if (layer.visible) {
         ctx.globalAlpha = layer.opacity;
-        ctx.globalCompositeOperation = layer.blendMode;
+        
+        // Use preview blend mode if active, otherwise use layer's blend mode
+        if (layer.id === activeLayerId && previewBlendMode) {
+             ctx.globalCompositeOperation = previewBlendMode;
+        } else {
+             ctx.globalCompositeOperation = layer.blendMode;
+        }
+
         ctx.drawImage(layer.canvas, 0, 0);
       }
     });
@@ -174,10 +217,16 @@ const App: React.FC = () => {
     ctx.globalCompositeOperation = 'source-over';
   };
 
-  // Re-render whenever layers change
+  // Re-render whenever layers change or blend preview changes
   useEffect(() => {
     renderCompositeCanvas();
-  }, [layers, canvasSize]);
+  }, [layers, canvasSize, previewBlendMode, activeLayerId]);
+
+  // Reset blend menu when active layer changes
+  useEffect(() => {
+    setShowBlendMenu(false);
+    setPreviewBlendMode(null);
+  }, [activeLayerId]);
 
 
   // --- Handlers: Generation ---
@@ -309,6 +358,50 @@ const App: React.FC = () => {
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
+  const handleReplaceLayerContent = (e: React.ChangeEvent<HTMLInputElement>) => {
+      if (e.target.files && e.target.files[0] && activeLayerId) {
+          const file = e.target.files[0];
+          const reader = new FileReader();
+          reader.onload = (ev) => {
+             const src = ev.target?.result as string;
+             if (src) {
+                 const img = new Image();
+                 img.src = src;
+                 img.onload = () => {
+                     const currentLayers = [...layers];
+                     const activeLayerIndex = currentLayers.findIndex(l => l.id === activeLayerId);
+                     if (activeLayerIndex > -1) {
+                         const activeLayer = currentLayers[activeLayerIndex];
+                         const ctx = activeLayer.canvas.getContext('2d');
+                         ctx?.clearRect(0, 0, activeLayer.canvas.width, activeLayer.canvas.height);
+                         
+                         const imgRatio = img.width / img.height;
+                         const canvasRatio = canvasSize.width / canvasSize.height;
+                         let drawWidth, drawHeight, offsetX, offsetY;
+                         if (imgRatio > canvasRatio) {
+                            drawWidth = canvasSize.width;
+                            drawHeight = canvasSize.width / imgRatio;
+                            offsetX = 0;
+                            offsetY = (canvasSize.height - drawHeight) / 2;
+                        } else {
+                            drawHeight = canvasSize.height;
+                            drawWidth = canvasSize.height * imgRatio;
+                            offsetY = 0;
+                            offsetX = (canvasSize.width - drawWidth) / 2;
+                        }
+                        ctx?.drawImage(img, offsetX, offsetY, drawWidth, drawHeight);
+                        setLayers(currentLayers);
+                        renderCompositeCanvas();
+                        saveHistory(currentLayers);
+                     }
+                 }
+             }
+          }
+          reader.readAsDataURL(file);
+      }
+      if (replaceInputRef.current) replaceInputRef.current.value = '';
+  };
+
   // Session Management
   const saveSession = () => {
     if (!canvasRef.current) return;
@@ -321,6 +414,9 @@ const App: React.FC = () => {
         brushColor,
         brushSize,
         brushType,
+        brushJitter,
+        brushFlow,
+        brushFalloff,
         transform
       };
       localStorage.setItem('magicLens_session', JSON.stringify(sessionData));
@@ -341,6 +437,9 @@ const App: React.FC = () => {
         setBrushColor(session.brushColor || '#FF0055');
         setBrushSize(session.brushSize || 20);
         setBrushType(session.brushType || 'pen');
+        setBrushJitter(session.brushJitter || 0);
+        setBrushFlow(session.brushFlow || 100);
+        setBrushFalloff(session.brushFalloff || 0);
         setTransform(session.transform || { x: 0, y: 0, scale: 1 });
         initEditorWithImage(session.image); 
       }
@@ -474,6 +573,8 @@ const App: React.FC = () => {
   const handleLayerBlendChange = (id: string, blendMode: GlobalCompositeOperation) => {
     const newLayers = layers.map(l => l.id === id ? { ...l, blendMode } : l);
     setLayers(newLayers);
+    setShowBlendMenu(false);
+    setPreviewBlendMode(null);
     saveHistory(newLayers);
   };
 
@@ -555,9 +656,10 @@ const App: React.FC = () => {
     return { x, y };
   };
 
-  const sprayPaint = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, size: number) => {
+  const sprayPaint = (ctx: CanvasRenderingContext2D, x: number, y: number, color: string, size: number, flow: number) => {
     ctx.fillStyle = color;
-    const density = Math.floor(size * 1.5); 
+    // Flow affects density for spray
+    const density = Math.floor(size * (flow / 20)); 
     for (let i = 0; i < density; i++) {
       const angle = Math.random() * 2 * Math.PI;
       const radius = Math.sqrt(Math.random()) * size; 
@@ -593,38 +695,50 @@ const App: React.FC = () => {
     if (!activeLayer || !activeLayer.visible) return;
 
     setIsDrawing(true);
+    strokeDistanceRef.current = 0; // Reset stroke distance
+
     const ctx = activeLayer.canvas.getContext('2d');
     if (!ctx) return;
     
-    // We get points relative to the main canvas view, which matches layer coordinate space
     const mainCanvas = canvasRef.current;
     if (!mainCanvas) return;
     
-    const { x, y } = getCanvasPoint(e, mainCanvas);
+    let { x, y } = getCanvasPoint(e, mainCanvas);
     
+    // Apply Start Jitter
+    if (brushJitter > 0) {
+      x += (Math.random() - 0.5) * brushJitter;
+      y += (Math.random() - 0.5) * brushJitter;
+    }
+
     ctx.lineWidth = brushSize;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     ctx.strokeStyle = brushColor;
     ctx.fillStyle = brushColor;
 
+    // Base Alpha Logic
+    let alpha = 1.0;
+    if (brushType === 'marker') alpha = 0.5;
+    
+    // Apply Flow (as opacity factor for non-spray)
+    if (brushType !== 'spray') {
+        alpha *= (brushFlow / 100);
+    }
+    
+    ctx.globalAlpha = alpha;
+    
     if (brushType === 'eraser') {
       ctx.globalCompositeOperation = 'destination-out';
-      ctx.globalAlpha = 1;
-    } else if (brushType === 'marker') {
-      ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = 0.5;
-    } else if (brushType === 'spray') {
-      ctx.globalCompositeOperation = 'source-over';
+      ctx.globalAlpha = (brushFlow / 100); // Flow affects eraser strength
     } else {
       ctx.globalCompositeOperation = 'source-over';
-      ctx.globalAlpha = 1;
     }
 
     if (brushType === 'spray') {
       ctx.beginPath();
       ctx.moveTo(x, y);
-      sprayPaint(ctx, x, y, brushColor, brushSize);
+      sprayPaint(ctx, x, y, brushColor, brushSize, brushFlow);
     } else {
       ctx.beginPath();
       ctx.moveTo(x, y);
@@ -658,10 +772,43 @@ const App: React.FC = () => {
     const mainCanvas = canvasRef.current;
     if (!mainCanvas) return;
 
-    const { x, y } = getCanvasPoint(e, mainCanvas);
+    let { x, y } = getCanvasPoint(e, mainCanvas);
+
+    // Apply Jitter
+    if (brushJitter > 0) {
+       x += (Math.random() - 0.5) * brushJitter;
+       y += (Math.random() - 0.5) * brushJitter;
+    }
     
+    // Calculate Falloff
+    if (lastDrawPointRef.current) {
+        const dx = x - lastDrawPointRef.current.x;
+        const dy = y - lastDrawPointRef.current.y;
+        strokeDistanceRef.current += Math.sqrt(dx*dx + dy*dy);
+    }
+
+    let alpha = 1.0;
+    if (brushType === 'marker') alpha = 0.5;
+
+    // Apply Flow
+    if (brushType !== 'spray') {
+        alpha *= (brushFlow / 100);
+    }
+
+    // Apply Falloff
+    if (brushFalloff > 0) {
+        // Falloff scale: 100 -> fade out quickly, 1 -> fade out slowly
+        // let's say max distance is 2000px for falloff=1
+        const maxDist = 3000 / (brushFalloff * 0.5 || 1); 
+        const fade = Math.max(0, 1 - (strokeDistanceRef.current / maxDist));
+        alpha *= fade;
+    }
+    
+    ctx.globalAlpha = alpha;
+    if (brushType === 'eraser') ctx.globalAlpha = alpha; // ensure eraser uses correct alpha
+
     if (brushType === 'spray') {
-      sprayPaint(ctx, x, y, brushColor, brushSize);
+      sprayPaint(ctx, x, y, brushColor, brushSize, brushFlow);
       ctx.beginPath(); 
       ctx.moveTo(x, y);
     } else {
@@ -683,6 +830,7 @@ const App: React.FC = () => {
     if (isDrawing) {
       setIsDrawing(false);
       lastDrawPointRef.current = null;
+      strokeDistanceRef.current = 0;
       const activeLayer = layers.find(l => l.id === activeLayerId);
       const ctx = activeLayer?.canvas.getContext('2d');
       if (ctx) {
@@ -1047,7 +1195,10 @@ const App: React.FC = () => {
                     </div>
 
                     {/* Floating Layers Panel (Right Side, above Zoom) */}
-                    <div className={`absolute right-4 top-4 z-30 transition-all ${showLayerPanel ? 'w-72' : 'w-auto'}`}>
+                    <div 
+                      onWheel={(e) => e.stopPropagation()}
+                      className={`absolute right-4 top-4 z-30 transition-all ${showLayerPanel ? 'w-72' : 'w-auto'}`}
+                    >
                         {/* Toggle Button */}
                         {!showLayerPanel && (
                              <button onClick={() => setShowLayerPanel(true)} className="p-3 bg-black/80 backdrop-blur-md border border-white/10 rounded-xl text-white shadow-xl hover:bg-white/10">
@@ -1067,31 +1218,64 @@ const App: React.FC = () => {
 
                                 {activeLayer && (
                                   <div className="p-3 border-b border-white/10 bg-white/5 space-y-3">
-                                      <div className="flex justify-between items-center">
-                                          <label className="text-xs text-gray-400">Opacity</label>
-                                          <span className="text-xs font-mono text-gray-300">{Math.round(activeLayer.opacity * 100)}%</span>
+                                      {/* Opacity Control */}
+                                      <div className="space-y-1">
+                                          <div className="flex justify-between items-center">
+                                              <label className="text-[10px] font-bold text-gray-500 uppercase">Opacity</label>
+                                              <span className="text-xs font-mono text-gray-300">{Math.round(activeLayer.opacity * 100)}%</span>
+                                          </div>
+                                          <input 
+                                            type="range" min="0" max="1" step="0.01" 
+                                            value={activeLayer.opacity}
+                                            onChange={(e) => handleLayerOpacityChange(activeLayer.id, parseFloat(e.target.value))}
+                                            onMouseUp={(e) => handleLayerOpacityCommit(activeLayer.id, parseFloat((e.target as HTMLInputElement).value))}
+                                            onTouchEnd={(e) => handleLayerOpacityCommit(activeLayer.id, parseFloat((e.target as HTMLInputElement).value))}
+                                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                                          />
                                       </div>
-                                      <input 
-                                        type="range" min="0" max="1" step="0.01" 
-                                        value={activeLayer.opacity}
-                                        onChange={(e) => handleLayerOpacityChange(activeLayer.id, parseFloat(e.target.value))}
-                                        onMouseUp={(e) => handleLayerOpacityCommit(activeLayer.id, parseFloat((e.target as HTMLInputElement).value))}
-                                        onTouchEnd={(e) => handleLayerOpacityCommit(activeLayer.id, parseFloat((e.target as HTMLInputElement).value))}
-                                        className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                                      />
                                       
-                                      <div className="flex justify-between items-center mt-2">
-                                          <label className="text-xs text-gray-400">Blend Mode</label>
-                                          <select 
-                                            value={activeLayer.blendMode}
-                                            onChange={(e) => handleLayerBlendChange(activeLayer.id, e.target.value as GlobalCompositeOperation)}
-                                            className="bg-gray-800 border border-gray-600 text-xs text-white rounded px-2 py-1 outline-none focus:border-indigo-500"
-                                          >
-                                              {BLEND_MODES.map(mode => (
-                                                  <option key={mode.value} value={mode.value}>{mode.label}</option>
-                                              ))}
-                                          </select>
+                                      {/* Blend Mode Dropdown */}
+                                      <div className="space-y-1 relative">
+                                          <label className="text-[10px] font-bold text-gray-500 uppercase">Blend Mode</label>
+                                          <div className="relative">
+                                              <button 
+                                                onClick={() => setShowBlendMenu(!showBlendMenu)}
+                                                className="w-full bg-gray-800 border border-gray-600 text-xs text-white rounded px-3 py-1.5 flex justify-between items-center hover:bg-gray-700 transition-colors"
+                                              >
+                                                  <span>{BLEND_MODES.find(m => m.value === (previewBlendMode || activeLayer.blendMode))?.label}</span>
+                                                  <IconArrowDown className="w-3 h-3 text-gray-400"/>
+                                              </button>
+                                              
+                                              {showBlendMenu && (
+                                                  <div className="absolute top-full left-0 right-0 mt-1 bg-gray-900 border border-gray-700 rounded-lg shadow-xl overflow-hidden z-50 max-h-48 overflow-y-auto">
+                                                      {BLEND_MODES.map(mode => (
+                                                          <div
+                                                              key={mode.value}
+                                                              className={`px-3 py-2 text-xs cursor-pointer flex justify-between items-center ${activeLayer.blendMode === mode.value ? 'bg-indigo-600 text-white' : 'text-gray-300 hover:bg-gray-800 hover:text-white'}`}
+                                                              onClick={() => handleLayerBlendChange(activeLayer.id, mode.value)}
+                                                              onMouseEnter={() => setPreviewBlendMode(mode.value)}
+                                                              onMouseLeave={() => setPreviewBlendMode(null)}
+                                                          >
+                                                              {mode.label}
+                                                              {activeLayer.blendMode === mode.value && <IconCheck className="w-3 h-3" />}
+                                                          </div>
+                                                      ))}
+                                                  </div>
+                                              )}
+                                          </div>
                                       </div>
+
+                                      {/* Replace Content */}
+                                      <label className="flex items-center gap-2 text-xs text-gray-400 hover:text-white cursor-pointer py-1">
+                                         <IconUpload className="w-3 h-3" /> Replace Content
+                                         <input 
+                                            type="file" 
+                                            ref={replaceInputRef}
+                                            accept="image/*" 
+                                            className="hidden" 
+                                            onChange={handleReplaceLayerContent} 
+                                          />
+                                      </label>
                                   </div>
                                 )}
                                 
@@ -1110,14 +1294,11 @@ const App: React.FC = () => {
                                             </button>
                                             
                                             {/* Preview Thumbnail */}
-                                            <div className="w-8 h-8 bg-gray-700 rounded border border-white/5 overflow-hidden flex-shrink-0">
-                                                {/* Simple checkerboard */}
-                                                <div className="w-full h-full bg-checkerboard opacity-50"></div> 
-                                            </div>
+                                            <LayerThumbnail layer={layer} />
 
                                             <div className="flex-1 min-w-0">
                                               <p className="text-xs font-medium text-gray-200 truncate select-none">{layer.name}</p>
-                                              <p className="text-[10px] text-gray-500 truncate">{layer.blendMode}</p>
+                                              <p className="text-[10px] text-gray-500 truncate">{BLEND_MODES.find(m => m.value === layer.blendMode)?.label}</p>
                                             </div>
                                             
                                             {/* Layer Controls */}
@@ -1161,6 +1342,7 @@ const App: React.FC = () => {
                         onPointerMove={handleDragMove}
                         onPointerUp={handleDragEnd}
                         onPointerCancel={handleDragEnd}
+                        onWheel={(e) => e.stopPropagation()}
                         style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }}
                         className={`absolute left-4 top-4 w-auto bg-black/90 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing touch-none z-30 transition-all ${isToolbarMinimized ? 'p-2' : 'p-3'}`}
                     >
@@ -1190,14 +1372,16 @@ const App: React.FC = () => {
                         </div>
 
                         {!isToolbarMinimized && (
-                          <div onPointerDown={(e) => e.stopPropagation()} className="space-y-4 animate-fade-in">
-                            <div className="grid grid-cols-3 gap-2">
+                          <div onPointerDown={(e) => e.stopPropagation()} className="space-y-4 animate-fade-in w-64">
+                            {/* Tools Grid */}
+                            <div className="grid grid-cols-4 gap-2">
                               <BrushBtn type="pan" icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} label="Pan Tool" />
                               <BrushBtn type="pen" icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} label="Pen Tool" />
                               <BrushBtn type="spray" icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} label="Spray Paint" />
                               <BrushBtn type="marker" icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} label="Marker" />
                               <BrushBtn type="eraser" icon={IconEraser} active={brushType === 'eraser'} onClick={() => setBrushType('eraser')} label="Eraser" />
-                              <div className="relative group w-full">
+                              
+                              <div className="col-span-1 relative group w-full">
                                 <button onClick={handleClearLayer} className="w-full p-2.5 rounded-lg bg-red-500/10 text-red-400 hover:bg-red-500/20 flex items-center justify-center">
                                   <IconTrash className="w-5 h-5" />
                                 </button>
@@ -1205,7 +1389,72 @@ const App: React.FC = () => {
                                   Clear Layer
                                 </div>
                               </div>
+                              
+                              {/* Settings Toggle */}
+                              <div className="col-span-1 relative group w-full">
+                                <button 
+                                  onClick={() => setShowBrushSettings(!showBrushSettings)} 
+                                  className={`w-full p-2.5 rounded-lg transition-all flex items-center justify-center ${showBrushSettings ? 'bg-indigo-600 text-white' : 'bg-gray-800 text-gray-400 hover:text-white'}`}
+                                >
+                                  <IconSliders className="w-5 h-5" />
+                                </button>
+                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 px-2 py-1 bg-black/90 backdrop-blur text-white text-[10px] font-medium rounded border border-white/10 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none whitespace-nowrap shadow-xl z-50">
+                                  Brush Settings
+                                </div>
+                              </div>
                             </div>
+                            
+                            {/* Primary Size Slider */}
+                            <div className="space-y-1">
+                                <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
+                                   <span>Size</span>
+                                   <span>{brushSize}px</span>
+                                </div>
+                                <input 
+                                  type="range" min="2" max="100" value={brushSize} 
+                                  onChange={(e) => setBrushSize(parseInt(e.target.value))}
+                                  className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500"
+                                />
+                             </div>
+
+                             {/* Collapsible Brush Settings */}
+                             {showBrushSettings && (
+                                <div className="p-3 bg-white/5 rounded-xl space-y-3 animate-fade-in border border-white/5">
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
+                                            <span>Flow</span>
+                                            <span>{brushFlow}%</span>
+                                        </div>
+                                        <input 
+                                            type="range" min="1" max="100" value={brushFlow}
+                                            onChange={(e) => setBrushFlow(parseInt(e.target.value))}
+                                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
+                                            <span>Jitter</span>
+                                            <span>{brushJitter}</span>
+                                        </div>
+                                        <input 
+                                            type="range" min="0" max="50" value={brushJitter}
+                                            onChange={(e) => setBrushJitter(parseInt(e.target.value))}
+                                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-pink-500"
+                                        />
+                                    </div>
+                                    <div className="space-y-1">
+                                        <div className="flex justify-between text-[10px] uppercase font-bold text-gray-500">
+                                            <span>Opacity Falloff</span>
+                                            <span>{brushFalloff}</span>
+                                        </div>
+                                        <input 
+                                            type="range" min="0" max="100" value={brushFalloff}
+                                            onChange={(e) => setBrushFalloff(parseInt(e.target.value))}
+                                            className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-blue-500"
+                                        />
+                                    </div>
+                                </div>
+                             )}
 
                             {/* Remove Background Tool */}
                             <button 
@@ -1233,13 +1482,7 @@ const App: React.FC = () => {
                                  </div>
                                </div>
                             </div>
-                             <div>
-                                <input 
-                                  type="range" min="2" max="100" value={brushSize} 
-                                  onChange={(e) => setBrushSize(parseInt(e.target.value))}
-                                  className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500"
-                                />
-                             </div>
+                             
                              <div className="grid grid-cols-4 gap-2">
                                 {['#FFFFFF', '#000000', '#FF0055', '#00E5FF', '#FFD700', '#32CD32', '#FF4500', '#9370DB'].map(color => (
                                   <button 
