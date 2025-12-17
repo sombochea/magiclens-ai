@@ -696,14 +696,27 @@ const App: React.FC = () => {
                       />
                     </div>
                     
-                    {/* Floating Zoom Controls */}
-                    <div className="absolute top-4 right-4 flex flex-col gap-2 z-20">
-                      <button onClick={handleZoomIn} className="p-2 bg-gray-800/80 backdrop-blur rounded-lg border border-white/10 shadow hover:bg-gray-700"><IconZoomIn /></button>
-                      <button onClick={handleResetZoom} className="p-2 bg-gray-800/80 backdrop-blur rounded-lg border border-white/10 shadow hover:bg-gray-700 text-xs font-bold">{Math.round(transform.scale * 100)}%</button>
-                      <button onClick={handleZoomOut} className="p-2 bg-gray-800/80 backdrop-blur rounded-lg border border-white/10 shadow hover:bg-gray-700"><IconZoomOut /></button>
+                    {/* Floating Minimalist Zoom Controls - Right Side */}
+                    <div className="absolute right-4 top-1/2 -translate-y-1/2 flex flex-col items-center gap-2 p-1.5 bg-black/60 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl z-20">
+                      <button onClick={handleZoomIn} className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 rounded-full transition-colors">
+                        <IconZoomIn className="w-5 h-5" />
+                      </button>
+                      
+                      {/* Vertical text indicator */}
+                      <span className="text-[10px] font-medium text-gray-400 rotate-90 py-2 select-none tracking-widest whitespace-nowrap">
+                        {Math.round(transform.scale * 100)}%
+                      </span>
+                      
+                      <button onClick={handleZoomOut} className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 rounded-full transition-colors">
+                        <IconZoomOut className="w-5 h-5" />
+                      </button>
+                      
+                      <button onClick={handleResetZoom} className="w-8 h-8 flex items-center justify-center text-gray-300 hover:text-white hover:bg-white/10 rounded-full transition-colors mt-1 border-t border-white/10" title="Reset">
+                         <div className="w-2 h-2 rounded-full bg-current" />
+                      </button>
                     </div>
 
-                    {/* Floating Tools Toolbar */}
+                    {/* Draggable Brushes Toolbar - Keep Existing Logic */}
                     <div 
                         ref={toolbarRef}
                         onPointerDown={handleDragStart}
@@ -711,7 +724,7 @@ const App: React.FC = () => {
                         onPointerUp={handleDragEnd}
                         onPointerCancel={handleDragEnd}
                         style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }}
-                        className={`absolute left-4 top-4 w-auto bg-black/90 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing touch-none z-20 transition-all ${isToolbarMinimized ? 'p-2' : 'p-3'}`}
+                        className={`absolute left-4 top-4 w-auto bg-black/90 backdrop-blur-xl rounded-2xl border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing touch-none z-30 transition-all ${isToolbarMinimized ? 'p-2' : 'p-3'}`}
                     >
                         {/* Header with Minimize & Save */}
                         <div className="flex justify-between items-center px-1 gap-2" onPointerDown={(e) => e.stopPropagation()}>
@@ -730,7 +743,6 @@ const App: React.FC = () => {
 
                         {!isToolbarMinimized && (
                           <div onPointerDown={(e) => e.stopPropagation()} className="space-y-4 animate-fade-in">
-                            {/* Brushes Grid */}
                             <div className="grid grid-cols-3 gap-2">
                               <BrushBtn type="pan" icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} />
                               <BrushBtn type="pen" icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} />
@@ -741,15 +753,11 @@ const App: React.FC = () => {
                                 <IconTrash className="w-5 h-5" />
                               </button>
                             </div>
-                            
                             <div className="h-px bg-white/10"></div>
-                            
                             <div className="flex justify-between gap-1">
                                <button onClick={handleUndo} disabled={historyStep <= 0} className="p-2 text-gray-400 hover:text-white disabled:opacity-30"><IconUndo /></button>
                                <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="p-2 text-gray-400 hover:text-white disabled:opacity-30"><IconRedo /></button>
                             </div>
-
-                            {/* Size Slider */}
                              <div>
                                 <input 
                                   type="range" min="2" max="100" value={brushSize} 
@@ -757,8 +765,6 @@ const App: React.FC = () => {
                                   className="w-full h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer accent-indigo-500"
                                 />
                              </div>
-                             
-                             {/* Colors */}
                              <div className="grid grid-cols-4 gap-2">
                                 {['#FFFFFF', '#000000', '#FF0055', '#00E5FF', '#FFD700', '#32CD32', '#FF4500', '#9370DB'].map(color => (
                                   <button 
@@ -771,35 +777,61 @@ const App: React.FC = () => {
                              </div>
                           </div>
                         )}
-                        {/* Minimized View shows active brush */}
                         {isToolbarMinimized && (
                            <div className="flex justify-center py-2" onPointerDown={(e) => e.stopPropagation()}>
                               <div className="w-6 h-6 rounded-full" style={{background: brushColor, border: '1px solid white'}}></div>
                            </div>
                         )}
                     </div>
-                  </div>
 
-                  {/* Bottom Bar for Prompt & Actions */}
-                  <div className="p-4 bg-black/90 border-t border-gray-800 z-30 pb-20 md:pb-4 shrink-0">
-                    <div className="max-w-3xl mx-auto flex gap-2">
-                       <button onClick={() => {setEditPreview(null); setEditFile(null);}} className="p-3 bg-gray-800 rounded-xl text-gray-400">
-                         <IconX />
-                       </button>
-                       <input
-                        type="text"
-                        value={editPrompt}
-                        onChange={(e) => setEditPrompt(e.target.value)}
-                        placeholder="What should change?"
-                        className="flex-1 bg-gray-950 border border-gray-700 rounded-xl px-4 focus:ring-2 focus:ring-indigo-500 outline-none"
-                      />
-                      <button
-                        onClick={handleMagicEdit}
-                        disabled={isEditing || !editPrompt}
-                        className="px-6 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-bold disabled:opacity-50 transition-colors flex items-center gap-2"
-                      >
-                         {isEditing ? <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin"/> : <IconWand />}
-                      </button>
+                    {/* Modern Floating "Magic Bar" Input */}
+                    <div className="absolute bottom-24 md:bottom-8 left-0 right-0 z-40 px-4 flex justify-center pointer-events-none">
+                      <div className="w-full max-w-2xl pointer-events-auto">
+                         <div className="relative group">
+                            {/* Glow Effect */}
+                            <div className="absolute -inset-0.5 bg-gradient-to-r from-indigo-500 to-purple-600 rounded-full opacity-20 group-hover:opacity-50 blur transition duration-500"></div>
+                            
+                            {/* Glass Container */}
+                            <div className="relative flex items-center gap-2 bg-gray-950/80 backdrop-blur-2xl border border-white/10 rounded-full p-2 pl-2 shadow-2xl">
+                               
+                               <button 
+                                 onClick={() => {setEditPreview(null); setEditFile(null);}} 
+                                 className="w-10 h-10 flex items-center justify-center rounded-full text-gray-400 hover:bg-white/10 hover:text-white transition-colors"
+                                 title="Cancel"
+                               >
+                                 <IconX className="w-5 h-5" />
+                               </button>
+
+                               <div className="h-6 w-px bg-white/10 mx-1"></div>
+
+                               <input
+                                type="text"
+                                value={editPrompt}
+                                onChange={(e) => setEditPrompt(e.target.value)}
+                                placeholder="Describe the magic change..."
+                                className="flex-1 bg-transparent border-none outline-none text-white placeholder-gray-500 text-sm md:text-base font-medium min-w-0"
+                              />
+                              
+                              <button
+                                onClick={handleMagicEdit}
+                                disabled={isEditing || !editPrompt}
+                                className={`
+                                    h-10 px-6 rounded-full font-bold text-white shadow-lg transition-all flex items-center gap-2
+                                    ${isEditing || !editPrompt ? 'bg-gray-800 text-gray-500 cursor-not-allowed' : 'bg-indigo-600 hover:bg-indigo-500 hover:shadow-indigo-500/25 active:scale-95'}
+                                `}
+                              >
+                                 {isEditing ? (
+                                   <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"/>
+                                 ) : (
+                                   <>
+                                     <span className="hidden sm:inline">Magic</span>
+                                     <IconWand className="w-4 h-4" />
+                                   </>
+                                 )}
+                              </button>
+                            </div>
+                         </div>
+                      </div>
                     </div>
                   </div>
 
