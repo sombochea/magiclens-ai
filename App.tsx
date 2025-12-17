@@ -321,6 +321,45 @@ const App: React.FC = () => {
   const handleZoomOut = () => setTransform(p => ({ ...p, scale: Math.max(p.scale - 0.5, 0.5) }));
   const handleResetZoom = () => setTransform({ x: 0, y: 0, scale: 1 });
 
+  // Mouse wheel zoom
+  const handleWheel = (e: React.WheelEvent) => {
+    if (!editPreview || !canvasRef.current || !containerRef.current) return;
+    
+    // Prevent default to avoid scrolling the page (if accessible)
+    // Note: React's synthetic event preventDefault might need specific conditions in some browsers
+    // but works for non-passive interactions usually.
+    // e.preventDefault(); 
+
+    const scaleAmount = -e.deltaY * 0.0015;
+    const newScale = Math.min(Math.max(0.1, transform.scale * (1 + scaleAmount)), 20);
+
+    const rect = containerRef.current.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    
+    const containerCenterX = rect.width / 2;
+    const containerCenterY = rect.height / 2;
+    
+    // Visual offset of the canvas (centered in container)
+    // The canvas is centered, so its top-left is at (containerWidth/2 - canvasWidth/2)
+    // Note: We use offsetWidth to get the layout width which matches visual size before transform
+    const baseX = containerCenterX - (canvasRef.current.offsetWidth / 2);
+    const baseY = containerCenterY - (canvasRef.current.offsetHeight / 2);
+
+    const deltaX = x - baseX;
+    const deltaY = y - baseY;
+
+    // Calculate new translation to keep mouse over same pixel
+    const newTx = deltaX - (deltaX - transform.x) * (newScale / transform.scale);
+    const newTy = deltaY - (deltaY - transform.y) * (newScale / transform.scale);
+
+    setTransform({
+        x: newTx,
+        y: newTy,
+        scale: newScale
+    });
+  };
+
   // --- Drawing Logic ---
   const getCanvasPoint = (e: React.MouseEvent | React.TouchEvent, canvas: HTMLCanvasElement) => {
     const rect = canvas.getBoundingClientRect();
@@ -397,7 +436,7 @@ const App: React.FC = () => {
       ctx.beginPath();
       ctx.moveTo(x, y);
       lastDrawPointRef.current = { x, y };
-      // Draw a single dot
+      // Draw a single dot to start
       ctx.lineTo(x, y);
       ctx.stroke();
     }
@@ -433,6 +472,7 @@ const App: React.FC = () => {
       // Smooth Drawing Logic with Quadratic Curves
       const p1 = lastDrawPointRef.current;
       if (p1) {
+         // Midpoint between previous point and current point
          const mid = { x: (p1.x + x) / 2, y: (p1.y + y) / 2 };
          ctx.quadraticCurveTo(p1.x, p1.y, mid.x, mid.y);
          ctx.stroke();
@@ -735,6 +775,7 @@ const App: React.FC = () => {
                   {/* Canvas Viewport */}
                   <div 
                     ref={containerRef}
+                    onWheel={handleWheel}
                     className="flex-1 bg-[#121212] relative overflow-hidden flex items-center justify-center touch-none select-none w-full"
                     style={{ cursor: brushType === 'pan' ? (isPanning ? 'grabbing' : 'grab') : 'crosshair' }}
                   >
