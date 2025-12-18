@@ -22,7 +22,7 @@ const SUGGESTED_PROMPTS = [
   "A group of astronauts playing poker on the moon"
 ];
 
-// Reusable Tooltip Component
+// Reusable Tooltip Component - Refined for smaller, lighter text
 const Tooltip: React.FC<{ children?: React.ReactNode, text: string, position?: 'top' | 'bottom' | 'left' | 'right', className?: string }> = ({ children, text, position = 'bottom', className = '' }) => {
   const posClasses = {
     top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
@@ -35,7 +35,7 @@ const Tooltip: React.FC<{ children?: React.ReactNode, text: string, position?: '
     <div className={`group relative flex items-center justify-center ${className}`}>
       {children}
       <div className={`pointer-events-none absolute z-[1000] scale-90 opacity-0 transition-all duration-200 group-hover:scale-100 group-hover:opacity-100 ${posClasses[position]}`}>
-        <div className="rounded-lg bg-gray-900 px-2.5 py-1.5 text-[9px] font-black uppercase tracking-widest text-white shadow-2xl border border-white/10 whitespace-normal max-w-[180px] text-center leading-tight">
+        <div className="rounded-lg bg-gray-900 px-2 py-1 text-[8px] font-light uppercase tracking-[0.1em] text-white shadow-2xl border border-white/5 whitespace-nowrap">
           {text}
         </div>
       </div>
@@ -205,6 +205,23 @@ const App: React.FC = () => {
     setHasSavedSession(!!saved);
   }, []);
 
+  // Auto-collapse logic for mobile
+  useEffect(() => {
+    const checkMobile = () => {
+      if (window.innerWidth < 768) {
+        setIsToolbarMinimized(true);
+        // Default mobile position: Offset from the layer button
+        setToolbarPos({ x: 0, y: 80 }); 
+      } else {
+        // Default desktop position: Near the layer panel
+        setToolbarPos({ x: 0, y: 0 });
+      }
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
   const toggleSection = (key: string) => setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] }));
 
   const loadGallery = async () => {
@@ -334,7 +351,20 @@ const App: React.FC = () => {
 
   const handleZoomIn = () => setTransform(t => ({ ...t, scale: Math.min(t.scale * 1.2, 10) }));
   const handleZoomOut = () => setTransform(t => ({ ...t, scale: Math.max(t.scale / 1.2, 0.1) }));
-  const handleResetZoom = () => setTransform({ x: 0, y: 0, scale: 1 });
+  const handleResetZoom = () => {
+    // Re-center and fit to screen
+    const maxDim = 2048;
+    const imgScale = Math.min(1, maxDim / Math.max(canvasSize.width, canvasSize.height));
+    const w = canvasSize.width;
+    const h = canvasSize.height;
+    if (containerRef.current) {
+        const padding = 60;
+        const containerW = containerRef.current.clientWidth - padding;
+        const containerH = containerRef.current.clientHeight - padding - 80;
+        const fitScale = Math.min(containerW / w, containerH / h, 1);
+        setTransform({ x: 0, y: 0, scale: fitScale });
+    }
+  };
 
   const handleToggleVisibility = (id: string) => {
     const next = layers.map(l => l.id === id ? { ...l, visible: !l.visible } : l);
@@ -413,7 +443,6 @@ const App: React.FC = () => {
       await saveItem({ id: Date.now().toString(), type: 'generated', src: results[0], prompt: genPrompt, timestamp: Date.now() });
       loadGallery();
     } catch (e: any) {
-      // Handle the case where the API key might have expired or is invalid
       if (e.message?.includes("Requested entity was not found.")) {
         if (typeof window !== 'undefined' && (window as any).aistudio) {
           await (window as any).aistudio.openSelectKey();
@@ -442,14 +471,15 @@ const App: React.FC = () => {
       setHistoryStep(-1);
       setTimeout(() => saveHistory([bg], w, h), 100);
 
-      // Fit to screen logic for mobile/desktop properly
+      // Improved auto-fit scaling for both mobile and desktop
       if (containerRef.current) {
-        const containerW = containerRef.current.clientWidth - 40;
-        const containerH = containerRef.current.clientHeight - 80;
-        const initialFitScale = Math.min(containerW / w, containerH / h, 1.2);
-        setTransform({ x: 0, y: 0, scale: initialFitScale });
+        const padding = window.innerWidth < 768 ? 20 : 60;
+        const containerW = containerRef.current.clientWidth - padding;
+        const containerH = containerRef.current.clientHeight - padding - 100; // Account for prompt bar
+        const initialFitScale = Math.min(containerW / w, containerH / h, 1);
+        setTransform({ x: 0, y: -20, scale: initialFitScale });
       } else {
-        setTransform({ x: 0, y: 0, scale: 1 });
+        setTransform({ x: 0, y: 0, scale: 0.5 });
       }
 
       needsCompositeRef.current = true;
@@ -643,7 +673,7 @@ const App: React.FC = () => {
     let targetX = (cx - rect.left) * (canvasRef.current.width / rect.width);
     let targetY = (cy - rect.top) * (canvasRef.current.height / rect.height);
 
-    // Brush Smoothing Logic (Linear Interpolation for cleaner lines)
+    // Brush Smoothing Logic
     const smoothingFactor = 1 - (brushSmoothing / 100);
     const lastSmoothed = smoothedPointRef.current || { x: targetX, y: targetY };
     const x = lastSmoothed.x + (targetX - lastSmoothed.x) * Math.max(0.01, smoothingFactor);
@@ -987,7 +1017,7 @@ const App: React.FC = () => {
               </div>
 
               <div className="pt-8 border-t border-white/5 flex flex-col items-center gap-3">
-                <div className="text-xs text-gray-400 font-bold tracking-wide">Built with <span className="text-red-500">❤️</span> by <a href="https://github.com/sombochea" target="_blank" rel="noreferrer" className="text-white hover:underline">Sambo Chea</a></div>
+                <div className="text-xs text-gray-400 font-bold tracking-wide text-center">Built with <span className="text-red-500">❤️</span> by <a href="https://github.com/sombochea" target="_blank" rel="noreferrer" className="text-white hover:underline">Sambo Chea</a></div>
                 <div className="px-4 py-1.5 bg-gray-900 rounded-full border border-white/5 flex items-center gap-2">
                   <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
                   <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">Powered by Google AI</span>
@@ -1013,26 +1043,26 @@ const App: React.FC = () => {
           <div className="flex-1 overflow-y-auto p-6 pb-40 animate-fade-in custom-scrollbar">
             <div className="max-w-5xl mx-auto space-y-12">
               <div className="text-center space-y-4">
-                <h2 className="text-5xl font-black tracking-tight text-white">Create Magic</h2>
-                <p className="text-gray-400 text-lg max-w-2xl mx-auto">Generate high-fidelity visual assets using the latest Gemini models.</p>
+                <h2 className="text-4xl md:text-5xl font-black tracking-tight text-white leading-tight">Create Magic</h2>
+                <p className="text-gray-400 text-sm md:text-lg max-w-2xl mx-auto">Generate high-fidelity visual assets using the latest Gemini models.</p>
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
-                <div className="lg:col-span-7 space-y-6">
-                  <div className="bg-gray-900/50 backdrop-blur border border-white/5 rounded-[40px] p-8 shadow-2xl space-y-6">
+                <div className="lg:col-span-7 space-y-6 w-full">
+                  <div className="bg-gray-900/50 backdrop-blur border border-white/5 rounded-[30px] md:rounded-[40px] p-6 md:p-8 shadow-2xl space-y-6">
                     <div className="space-y-4">
                       <div className="flex justify-between items-center px-1">
                         <label className="text-[10px] font-black uppercase tracking-widest text-gray-500">Your Prompt</label>
                         <button onClick={() => setGenPrompt("")} className="text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300 transition-colors">Clear</button>
                       </div>
-                      <textarea value={genPrompt} onChange={e => setGenPrompt(e.target.value)} placeholder="A celestial fox dancing in the aurora borealis..." className="w-full bg-gray-950/50 border border-white/5 rounded-3xl p-6 h-48 focus:ring-2 focus:ring-indigo-500/50 transition-all resize-none text-lg text-white font-medium outline-none" />
+                      <textarea value={genPrompt} onChange={e => setGenPrompt(e.target.value)} placeholder="A celestial fox dancing in the aurora borealis..." className="w-full bg-gray-950/50 border border-white/5 rounded-2xl md:rounded-3xl p-4 md:p-6 h-40 md:h-48 focus:ring-2 focus:ring-indigo-500/50 transition-all resize-none text-base md:text-lg text-white font-medium outline-none" />
                     </div>
 
                     <div className="space-y-4">
                       <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 px-1">Quick Suggestions</label>
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                         {SUGGESTED_PROMPTS.map((p, i) => (
-                          <button key={i} onClick={() => setGenPrompt(p)} className="text-left px-4 py-3 bg-white/5 hover:bg-white/10 rounded-2xl text-[11px] font-medium text-gray-400 border border-transparent hover:border-white/10 transition-all truncate">
+                          <button key={i} onClick={() => setGenPrompt(p)} className="text-left px-4 py-3 bg-white/5 hover:bg-white/10 rounded-xl md:rounded-2xl text-[10px] md:text-[11px] font-medium text-gray-400 border border-transparent hover:border-white/10 transition-all truncate">
                             {p}
                           </button>
                         ))}
@@ -1041,15 +1071,15 @@ const App: React.FC = () => {
                   </div>
                 </div>
 
-                <div className="lg:col-span-5 space-y-6">
-                  <div className="bg-gray-900/50 backdrop-blur border border-white/5 rounded-[40px] p-8 shadow-2xl space-y-8">
+                <div className="lg:col-span-5 space-y-6 w-full">
+                  <div className="bg-gray-900/50 backdrop-blur border border-white/5 rounded-[30px] md:rounded-[40px] p-6 md:p-8 shadow-2xl space-y-8">
                     <div className="space-y-4">
                       <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 px-1">Engine</label>
                       <div className="flex bg-gray-950 p-1.5 rounded-2xl border border-white/5">
-                        <button onClick={() => setGenModel('gemini-2.5-flash-image')} className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${genModel === 'gemini-2.5-flash-image' ? 'bg-indigo-600 text-white shadow-xl' : 'text-gray-500 hover:bg-white/5'}`}>Nano Banana</button>
-                        <button onClick={() => setGenModel('gemini-3-pro-image-preview')} className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${genModel === 'gemini-3-pro-image-preview' ? 'bg-indigo-600 text-white shadow-xl' : 'text-gray-500 hover:bg-white/5'}`}>Pro Engine</button>
+                        <button onClick={() => setGenModel('gemini-2.5-flash-image')} className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${genModel === 'gemini-2.5-flash-image' ? 'bg-indigo-600 text-white shadow-xl' : 'text-gray-500 hover:bg-white/5'}`}>Nano</button>
+                        <button onClick={() => setGenModel('gemini-3-pro-image-preview')} className={`flex-1 py-3 text-[10px] font-black uppercase tracking-widest rounded-xl transition-all ${genModel === 'gemini-3-pro-image-preview' ? 'bg-indigo-600 text-white shadow-xl' : 'text-gray-500 hover:bg-white/5'}`}>Pro</button>
                       </div>
-                      <p className="text-[9px] text-gray-500 font-bold text-center px-4 leading-relaxed">
+                      <p className="text-[9px] text-gray-500 font-medium text-center px-4 leading-relaxed">
                         {genModel === 'gemini-2.5-flash-image' ? "Lightweight & fast. Great for quick drafts." : "Maximum quality & detail. Requires API Key selection."}
                       </p>
                     </div>
@@ -1058,25 +1088,25 @@ const App: React.FC = () => {
                       <div className="space-y-3">
                         <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 px-1">Aspect Ratio</label>
                         <div className="relative">
-                          <select value={aspectRatio} onChange={e => setAspectRatio(e.target.value as any)} className="block w-full bg-gray-950 border border-white/5 rounded-2xl p-3.5 text-xs font-bold text-white outline-none cursor-pointer focus:border-indigo-500/50 transition-colors appearance-none">
+                          <select value={aspectRatio} onChange={e => setAspectRatio(e.target.value as any)} className="block w-full bg-gray-950 border border-white/5 rounded-2xl p-3 text-xs font-bold text-white outline-none cursor-pointer focus:border-indigo-500/50 transition-colors appearance-none">
                             {Object.values(AspectRatio).map(r => <option key={r} value={r}>{r}</option>)}
                           </select>
-                          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
-                            <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z" /></svg>
+                          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-600">
+                            <IconChevronDown className="w-4 h-4" />
                           </div>
                         </div>
                       </div>
                       <div className="space-y-3">
                         <label className="text-[10px] font-black uppercase tracking-widest text-gray-500 px-1">Resolution</label>
-                        <div className="flex bg-gray-950 p-1.5 rounded-2xl border border-white/5">
+                        <div className="flex bg-gray-950 p-1 rounded-2xl border border-white/5">
                           {Object.values(ImageResolution).map(r => (
-                            <button key={r} onClick={() => setImageSize(r)} className={`flex-1 py-2 text-[10px] font-black rounded-lg transition-all ${imageSize === r ? 'bg-gray-800 text-white' : 'text-gray-600 hover:text-gray-400'}`}>{r}</button>
+                            <button key={r} onClick={() => setImageSize(r)} className={`flex-1 py-2 text-[9px] md:text-[10px] font-black rounded-lg transition-all ${imageSize === r ? 'bg-gray-800 text-white' : 'text-gray-600 hover:text-gray-400'}`}>{r}</button>
                           ))}
                         </div>
                       </div>
                     </div>
 
-                    <button onClick={handleGenerate} disabled={isGenerating || !genPrompt} className="w-full py-6 bg-gradient-to-r from-indigo-600 to-purple-600 rounded-[30px] font-black uppercase tracking-[0.2em] text-[12px] text-white shadow-2xl shadow-indigo-500/20 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3">
+                    <button onClick={handleGenerate} disabled={isGenerating || !genPrompt} className="w-full py-5 md:py-6 bg-gradient-to-r from-indigo-600 to-purple-600 rounded-[25px] md:rounded-[30px] font-black uppercase tracking-[0.2em] text-[11px] md:text-[12px] text-white shadow-2xl shadow-indigo-500/20 hover:scale-[1.02] active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3">
                       {isGenerating ? <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <><IconWand className="w-5 h-5" /> Generate Magic</>}
                     </button>
                   </div>
@@ -1088,10 +1118,10 @@ const App: React.FC = () => {
                   <div className="flex items-center gap-4"><div className="h-px flex-1 bg-white/5"></div><span className="text-[10px] font-black uppercase tracking-widest text-gray-600">Generated Results</span><div className="h-px flex-1 bg-white/5"></div></div>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                     {generatedImages.map((src, i) => (
-                      <div key={i} className="group relative rounded-[40px] overflow-hidden border border-white/5 shadow-[0_20px_50px_rgba(0,0,0,0.4)] bg-gray-900 transition-all hover:scale-[1.02]">
+                      <div key={i} className="group relative rounded-[30px] md:rounded-[40px] overflow-hidden border border-white/5 shadow-[0_20px_50px_rgba(0,0,0,0.4)] bg-gray-900 transition-all hover:scale-[1.02]">
                         <img src={src} className="w-full h-auto object-cover" alt="AI Generated Output" />
                         <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center gap-4 transition-all duration-300">
-                          <button onClick={() => downloadImage(src, `magic-${Date.now()}.png`)} className="px-8 py-4 bg-white text-black rounded-[24px] font-black uppercase text-[10px] tracking-widest flex items-center gap-2 hover:scale-110 active:scale-95 transition-all flex items-center justify-center">
+                          <button onClick={() => downloadImage(src, `magic-${Date.now()}.png`)} className="px-6 md:px-8 py-3 md:py-4 bg-white text-black rounded-full font-black uppercase text-[9px] md:text-[10px] tracking-widest flex items-center gap-2 hover:scale-110 active:scale-95 transition-all">
                             <IconDownload className="w-4 h-4" /> Save Asset
                           </button>
                         </div>
@@ -1107,25 +1137,25 @@ const App: React.FC = () => {
         {mode === AppMode.EDIT && (
           <div className="flex-1 flex flex-col relative overflow-hidden">
             {layers.length === 0 ? (
-              <div className="flex-1 flex flex-col justify-center items-center p-6 space-y-8 md:space-y-12">
-                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-72 h-72 md:w-96 md:h-96 bg-indigo-500/10 blur-[100px] rounded-full -z-10 animate-pulse"></div>
-                <div className="text-center space-y-4 max-w-md">
-                  <div className="inline-flex p-4 md:p-6 rounded-[30px] md:rounded-[40px] bg-indigo-500/10 border border-indigo-500/20"><IconWand className="w-10 h-10 md:w-16 md:h-16 text-indigo-400" /></div>
-                  <h2 className="text-3xl md:text-4xl font-black tracking-tight">Magic Canvas</h2>
-                  <p className="text-gray-400 text-sm md:text-lg">Start your project by adding an image or taking a fresh shot.</p>
+              <div className="flex-1 flex flex-col justify-center items-center p-6 space-y-8 md:space-y-12 w-full h-full overflow-y-auto">
+                <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 md:w-96 md:h-96 bg-indigo-500/10 blur-[100px] rounded-full -z-10 animate-pulse"></div>
+                <div className="text-center space-y-4 max-w-md w-full px-4">
+                  <div className="inline-flex p-4 md:p-6 rounded-[25px] md:rounded-[40px] bg-indigo-500/10 border border-indigo-500/20 shadow-inner"><IconWand className="w-10 h-10 md:w-16 md:h-16 text-indigo-400" /></div>
+                  <h2 className="text-3xl md:text-4xl font-black tracking-tight text-white">Magic Canvas</h2>
+                  <p className="text-gray-400 text-sm md:text-lg font-medium leading-relaxed">Start your project by adding an image or taking a fresh shot with your camera.</p>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 w-full max-w-lg md:max-w-2xl px-4">
-                  <label className="flex flex-col items-center justify-center p-6 md:p-10 bg-gray-900/50 backdrop-blur rounded-[30px] md:rounded-[40px] cursor-pointer hover:bg-gray-800 transition-all border border-gray-800 hover:border-indigo-500/30 shadow-2xl group">
-                    <div className="w-12 h-12 md:w-16 md:h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-4 md:mb-6 group-hover:scale-110 transition-transform"><IconUpload className="w-6 h-6 md:w-8 md:h-8 text-indigo-400" /></div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 md:gap-6 w-full max-w-[340px] md:max-w-2xl px-4">
+                  <label className="flex flex-col items-center justify-center p-6 md:p-10 bg-gray-900/50 backdrop-blur-xl rounded-[25px] md:rounded-[40px] cursor-pointer hover:bg-gray-800 transition-all border border-gray-800 hover:border-indigo-500/30 shadow-2xl group">
+                    <div className="w-12 h-12 md:w-16 md:h-16 bg-indigo-500/10 rounded-2xl flex items-center justify-center mb-3 md:mb-6 group-hover:scale-110 transition-transform"><IconUpload className="w-6 h-6 md:w-8 md:h-8 text-indigo-400" /></div>
                     <span className="font-black uppercase text-[10px] md:text-xs tracking-widest text-white">Upload File</span>
                     <input type="file" className="hidden" accept="image/*" onChange={handleEditFileChange} />
                   </label>
-                  <button onClick={() => startCamera('environment')} className="flex flex-col items-center justify-center p-6 md:p-10 bg-gray-900/50 backdrop-blur rounded-[30px] md:rounded-[40px] hover:bg-gray-800 transition-all border border-gray-800 hover:border-purple-500/30 shadow-2xl group">
-                    <div className="w-12 h-12 md:w-16 md:h-16 bg-purple-500/10 rounded-2xl flex items-center justify-center mb-4 md:mb-6 group-hover:scale-110 transition-transform"><IconCamera className="w-6 h-6 md:w-8 md:h-8 text-purple-400" /></div>
+                  <button onClick={() => startCamera('environment')} className="flex flex-col items-center justify-center p-6 md:p-10 bg-gray-900/50 backdrop-blur-xl rounded-[25px] md:rounded-[40px] hover:bg-gray-800 transition-all border border-gray-800 hover:border-purple-500/30 shadow-2xl group">
+                    <div className="w-12 h-12 md:w-16 md:h-16 bg-purple-500/10 rounded-2xl flex items-center justify-center mb-3 md:mb-6 group-hover:scale-110 transition-transform"><IconCamera className="w-6 h-6 md:w-8 md:h-8 text-purple-400" /></div>
                     <span className="font-black uppercase text-[10px] md:text-xs tracking-widest text-white">Camera</span>
                   </button>
                 </div>
-                {hasSavedSession && <button onClick={loadSession} className="py-3 px-8 md:py-4 md:px-10 bg-white/5 hover:bg-white/10 rounded-full border border-white/10 text-gray-300 font-bold transition-all text-sm md:text-base">Restore Session</button>}
+                {hasSavedSession && <button onClick={loadSession} className="py-3 px-8 md:py-4 md:px-10 bg-white/5 hover:bg-white/10 rounded-full border border-white/10 text-gray-300 font-bold transition-all text-xs md:text-base uppercase tracking-widest">Restore Last Session</button>}
               </div>
             ) : (
               <>
@@ -1166,18 +1196,18 @@ const App: React.FC = () => {
                     </div>
                   </div>
                   {isEditing && <ProcessingOverlay text="AI Woven Magic..." />}
-                  <div className="absolute right-6 top-1/2 -translate-y-1/2 flex flex-col gap-2 p-2 bg-black/60 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl z-20">
-                    <Tooltip text="Zoom In" position="left"><button onClick={handleZoomIn} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors"><IconZoomIn className="w-5 h-5" /></button></Tooltip>
-                    <Tooltip text="Zoom Out" position="left"><button onClick={handleZoomOut} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors"><IconZoomOut className="w-5 h-5" /></button></Tooltip>
-                    <Tooltip text="Reset Zoom" position="left"><button onClick={handleResetZoom} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-indigo-400 border-t border-white/5 mt-2 flex items-center justify-center"><div className="w-1.5 h-1.5 rounded-full bg-current" /></button></Tooltip>
+                  <div className="absolute right-6 top-1/2 -translate-y-1/2 flex flex-col gap-2 p-1.5 md:p-2 bg-black/60 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl z-20">
+                    <Tooltip text="Zoom In" position="left"><button onClick={handleZoomIn} className="w-9 h-9 md:w-10 md:h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors"><IconZoomIn className="w-4 h-4 md:w-5 md:h-5" /></button></Tooltip>
+                    <Tooltip text="Zoom Out" position="left"><button onClick={handleZoomOut} className="w-9 h-9 md:w-10 md:h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors"><IconZoomOut className="w-4 h-4 md:w-5 md:h-5" /></button></Tooltip>
+                    <Tooltip text="Fit View" position="left"><button onClick={handleResetZoom} className="w-9 h-9 md:w-10 md:h-10 flex items-center justify-center text-gray-300 hover:text-indigo-400 border-t border-white/5 mt-1.5 flex items-center justify-center pt-1.5"><div className="w-1.5 h-1.5 rounded-full bg-current" /></button></Tooltip>
                   </div>
 
-                  <div className={`absolute right-6 top-6 z-30 transition-all ${showLayerPanel ? 'w-80' : 'w-auto'}`}>
-                    {!showLayerPanel && <Tooltip text="Open Layers" position="left"><button onClick={() => setShowLayerPanel(true)} className="p-4 bg-black/80 backdrop-blur border border-white/10 rounded-2xl text-white shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center"><IconLayers className="w-6 h-6" /></button></Tooltip>}
+                  <div className={`absolute right-6 top-6 z-30 transition-all ${showLayerPanel ? 'w-full md:w-80 px-4 md:px-0' : 'w-auto'}`}>
+                    {!showLayerPanel && <Tooltip text="Layers" position="left"><button onClick={() => setShowLayerPanel(true)} className="p-3.5 md:p-4 bg-black/80 backdrop-blur border border-white/10 rounded-2xl text-white shadow-xl hover:scale-105 active:scale-95 transition-all"><IconLayers className="w-5 h-5 md:w-6 md:h-6" /></button></Tooltip>}
                     {showLayerPanel && (
-                      <div className="bg-[#0f0f11]/95 backdrop-blur-2xl border border-white/10 rounded-[32px] shadow-2xl flex flex-col overflow-hidden max-h-[70vh]">
-                        <div className="p-5 border-b border-white/10 flex justify-between items-center bg-white/5"><h3 className="text-[10px] font-black uppercase tracking-widest text-gray-400">Layers</h3><button onClick={() => setShowLayerPanel(false)} className="text-gray-500 hover:text-white flex items-center justify-center"><IconX className="w-4 h-4" /></button></div>
-                        <div className="overflow-y-auto flex-col-reverse flex p-4 gap-3">
+                      <div className="bg-[#0f0f11]/95 backdrop-blur-2xl border border-white/10 rounded-[28px] md:rounded-[32px] shadow-2xl flex flex-col overflow-hidden max-h-[60vh] md:max-h-[70vh]">
+                        <div className="p-4 md:p-5 border-b border-white/10 flex justify-between items-center bg-white/5"><h3 className="text-[9px] md:text-[10px] font-black uppercase tracking-widest text-gray-400">Layers</h3><button onClick={() => setShowLayerPanel(false)} className="text-gray-500 hover:text-white p-1"><IconX className="w-4 h-4" /></button></div>
+                        <div className="overflow-y-auto flex-col-reverse flex p-3 md:p-4 gap-2 md:gap-3">
                           {layers.map((l, i) => (
                             <div
                               key={l.id}
@@ -1187,15 +1217,13 @@ const App: React.FC = () => {
                               onDrop={(e) => { e.preventDefault(); handleLayerDrop(i); }}
                               onDragEnd={() => setDraggedLayerIndex(null)}
                               onClick={() => setActiveLayerId(l.id)}
-                              className={`relative p-3 rounded-2xl flex items-center gap-4 cursor-pointer border transition-all ${activeLayerId === l.id ? 'bg-indigo-600/10 border-indigo-500/40 shadow-xl' : 'bg-gray-900/40 border-transparent hover:bg-white/5'} ${draggedLayerIndex === i ? 'opacity-40 scale-95 border-indigo-500/50' : ''}`}
+                              className={`relative p-2 md:p-3 rounded-2xl flex items-center gap-3 md:gap-4 cursor-pointer border transition-all ${activeLayerId === l.id ? 'bg-indigo-600/10 border-indigo-500/40 shadow-xl' : 'bg-gray-900/40 border-transparent hover:bg-white/5'} ${draggedLayerIndex === i ? 'opacity-40 scale-95 border-indigo-500/50' : ''}`}
                             >
-                              <div className="p-1 text-gray-600 hover:text-gray-400 cursor-grab active:cursor-grabbing flex items-center justify-center">
-                                <IconMove className="w-4 h-4" />
-                              </div>
-                              <button onClick={e => { e.stopPropagation(); handleToggleVisibility(l.id); }} className={`p-1 transition-colors flex items-center justify-center ${l.visible ? 'text-indigo-400' : 'text-gray-700'}`}>{l.visible ? <IconEye className="w-4 h-4" /> : <IconEyeOff className="w-4 h-4" />}</button>
+                              <div className="text-gray-600 hover:text-gray-400 cursor-grab active:cursor-grabbing p-1"><IconMove className="w-3.5 h-3.5 md:w-4 md:h-4" /></div>
+                              <button onClick={e => { e.stopPropagation(); handleToggleVisibility(l.id); }} className={`p-1 transition-colors ${l.visible ? 'text-indigo-400' : 'text-gray-700'}`}>{l.visible ? <IconEye className="w-4 h-4" /> : <IconEyeOff className="w-4 h-4" />}</button>
                               <LayerThumbnail layer={l} />
                               <div className="flex-1 min-w-0">
-                                <p className="text-xs font-black truncate text-gray-200">{l.name}</p>
+                                <p className="text-[11px] md:text-xs font-black truncate text-gray-200">{l.name}</p>
                                 <div className="relative">
                                   <button
                                     onClick={(e) => { e.stopPropagation(); setBlendModeMenuId(blendModeMenuId === l.id ? null : l.id); }}
@@ -1204,17 +1232,14 @@ const App: React.FC = () => {
                                     {l.blendMode}
                                   </button>
                                   {blendModeMenuId === l.id && (
-                                    <div
-                                      className="absolute bottom-full left-0 mb-2 w-40 bg-gray-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50 animate-fade-in"
-                                      onMouseLeave={() => { setPreviewBlendMode(null); }}
-                                    >
-                                      <div className="max-h-48 overflow-y-auto">
+                                    <div className="absolute bottom-full left-0 mb-2 w-32 md:w-40 bg-gray-900 border border-white/10 rounded-xl shadow-2xl overflow-hidden z-50" onMouseLeave={() => { setPreviewBlendMode(null); }}>
+                                      <div className="max-h-40 md:max-h-48 overflow-y-auto">
                                         {BLEND_MODES.map(mode => (
                                           <button
                                             key={mode.value}
                                             onMouseEnter={() => { if (activeLayerId === l.id) setPreviewBlendMode(mode.value); }}
                                             onClick={(e) => { e.stopPropagation(); handleSetBlendMode(l.id, mode.value); }}
-                                            className={`w-full text-left px-4 py-2 text-[10px] font-bold uppercase transition-colors ${l.blendMode === mode.value ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}
+                                            className={`w-full text-left px-3 md:px-4 py-2 text-[9px] md:text-[10px] font-bold uppercase ${l.blendMode === mode.value ? 'bg-indigo-600 text-white' : 'text-gray-400 hover:bg-white/5 hover:text-white'}`}
                                           >
                                             {mode.label}
                                           </button>
@@ -1224,90 +1249,77 @@ const App: React.FC = () => {
                                   )}
                                 </div>
                               </div>
-                              {activeLayerId === l.id && layers.length > 1 && <button onClick={e => { e.stopPropagation(); handleDeleteLayer(l.id); }} className="text-gray-600 hover:text-red-400 p-1 flex items-center justify-center"><IconTrash className="w-3.5 h-3.5" /></button>}
+                              {activeLayerId === l.id && layers.length > 1 && <button onClick={e => { e.stopPropagation(); handleDeleteLayer(l.id); }} className="text-gray-600 hover:text-red-400 p-1"><IconTrash className="w-3.5 h-3.5" /></button>}
                             </div>
                           ))}
                         </div>
-                        <div className="p-4 border-t border-white/10 grid grid-cols-2 gap-3 bg-white/5">
-                          <Tooltip text="Add New Layer" position="top"><button onClick={handleAddLayer} className="w-full py-3 bg-white/5 rounded-2xl text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all flex items-center justify-center">Layer</button></Tooltip>
-                          <Tooltip text="Add Image as Layer" position="top"><label className="w-full py-3 bg-indigo-600/10 rounded-2xl text-[10px] font-black uppercase tracking-widest text-indigo-400 flex items-center justify-center gap-2 cursor-pointer transition-colors hover:bg-indigo-600/20"><IconImage className="w-4 h-4" /> Image<input type="file" className="hidden" accept="image/*" onChange={handleAddImageLayer} /></label></Tooltip>
+                        <div className="p-3 md:p-4 border-t border-white/10 grid grid-cols-2 gap-2 md:gap-3 bg-white/5">
+                          <button onClick={handleAddLayer} className="w-full py-2.5 md:py-3 bg-white/5 rounded-xl md:rounded-2xl text-[9px] md:text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all">Layer</button>
+                          <label className="w-full py-2.5 md:py-3 bg-indigo-600/10 rounded-xl md:rounded-2xl text-[9px] md:text-[10px] font-black uppercase tracking-widest text-indigo-400 flex items-center justify-center gap-2 cursor-pointer transition-colors hover:bg-indigo-600/20"><IconImage className="w-3.5 h-3.5 md:w-4 md:h-4" /> Image<input type="file" className="hidden" accept="image/*" onChange={handleAddImageLayer} /></label>
                         </div>
                       </div>
                     )}
                   </div>
 
-                  <div ref={toolbarRef} onPointerDown={handleDragStart} onPointerMove={handleDragMove} onPointerUp={handleDragEnd} onPointerCancel={handleDragEnd} style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }} className={`absolute right-[340px] top-6 w-72 bg-black/90 backdrop-blur-xl rounded-[32px] border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing z-30 overflow-hidden ${isToolbarMinimized ? 'p-2' : 'p-4'}`}>
+                  {/* TOOLS PANEL - Mobile position & auto-collapse behavior managed by initial states */}
+                  <div ref={toolbarRef} onPointerDown={handleDragStart} onPointerMove={handleDragMove} onPointerUp={handleDragEnd} onPointerCancel={handleDragEnd} style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }} className={`absolute right-6 md:right-[340px] top-6 w-[280px] md:w-72 bg-black/90 backdrop-blur-xl rounded-[28px] md:rounded-[32px] border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing z-30 overflow-hidden ${isToolbarMinimized ? 'p-2' : 'p-4'}`}>
                     <div className="flex justify-between items-center gap-4 shrink-0" onPointerDown={e => e.stopPropagation()}>
-                      <div className="p-1 opacity-40 flex items-center justify-center" onPointerDown={handleDragStart}><IconMove className="w-4 h-4 text-gray-400" /></div>
+                      <div className="p-1 opacity-30 flex items-center justify-center" onPointerDown={handleDragStart}><IconMove className="w-4 h-4 text-gray-400" /></div>
                       <div className="flex gap-2">
-                        <Tooltip text="Save Project" position="top"><button onClick={saveSession} className="text-gray-500 hover:text-emerald-400 transition-colors flex items-center justify-center"><IconSave className="w-4 h-4" /></button></Tooltip>
-                        <Tooltip text={isToolbarMinimized ? "Expand Toolbar" : "Minimize Toolbar"} position="top"><button onClick={() => setIsToolbarMinimized(!isToolbarMinimized)} className="text-gray-500 hover:text-white flex items-center justify-center">{isToolbarMinimized ? <IconMaximize className="w-4 h-4" /> : <IconMinimize className="w-4 h-4" />}</button></Tooltip>
+                        <Tooltip text="Save" position="top"><button onClick={saveSession} className="text-gray-500 hover:text-emerald-400 p-1"><IconSave className="w-4 h-4" /></button></Tooltip>
+                        <Tooltip text={isToolbarMinimized ? "Expand" : "Minimize"} position="top"><button onClick={() => setIsToolbarMinimized(!isToolbarMinimized)} className="text-gray-500 hover:text-white p-1">{isToolbarMinimized ? <IconMaximize className="w-4 h-4" /> : <IconMinimize className="w-4 h-4" />}</button></Tooltip>
                       </div>
                     </div>
                     {!isToolbarMinimized && (
-                      <div onPointerDown={e => e.stopPropagation()} className="space-y-4 w-full animate-fade-in custom-scrollbar overflow-y-auto overflow-x-hidden max-h-[70vh] pr-1">
+                      <div onPointerDown={e => e.stopPropagation()} className="space-y-4 w-full animate-fade-in custom-scrollbar overflow-y-auto overflow-x-hidden max-h-[50vh] md:max-h-[70vh] pr-1">
                         <div className="grid grid-cols-4 gap-2">
-                          <BrushBtn icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} tooltip="Pan Tool (Spacebar)" />
-                          <BrushBtn icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} tooltip="Brush Tool (B)" />
-                          <BrushBtn icon={IconEraser} active={brushType === 'eraser'} onClick={() => setBrushType('eraser')} tooltip="Eraser Tool (E)" />
-                          <Tooltip text="Canvas Tools" position="top">
-                            <button onClick={() => setShowToolsMenu(!showToolsMenu)} className={`w-10 h-10 rounded-xl transition-all flex items-center justify-center ${showToolsMenu ? 'bg-indigo-600 text-white' : 'bg-gray-800/60 text-gray-400 hover:bg-gray-700'}`}><IconCrop className="w-5 h-5" /></button>
-                          </Tooltip>
+                          <BrushBtn icon={IconHand} active={brushType === 'pan'} onClick={() => setBrushType('pan')} tooltip="Pan" />
+                          <BrushBtn icon={IconPen} active={brushType === 'pen'} onClick={() => setBrushType('pen')} tooltip="Brush" />
+                          <BrushBtn icon={IconEraser} active={brushType === 'eraser'} onClick={() => setBrushType('eraser')} tooltip="Eraser" />
+                          <button onClick={() => setShowToolsMenu(!showToolsMenu)} className={`w-10 h-10 rounded-xl transition-all flex items-center justify-center ${showToolsMenu ? 'bg-indigo-600 text-white' : 'bg-gray-800/60 text-gray-400 hover:bg-gray-700'}`}><IconCrop className="w-5 h-5" /></button>
                         </div>
                         {showToolsMenu && (
                           <div className="grid grid-cols-4 gap-2 p-2 bg-white/5 rounded-2xl animate-fade-in border border-white/5">
-                            <Tooltip text="Crop Canvas" position="top"><button onClick={toggleCrop} className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${isCropping ? 'bg-indigo-600 text-white' : 'bg-gray-900 text-gray-400 hover:text-white'}`}><IconCrop className="w-5 h-5" /></button></Tooltip>
-                            <Tooltip text="Resize Image" position="top"><button onClick={openResizeDialog} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors"><IconScaling className="w-5 h-5" /></button></Tooltip>
-                            <Tooltip text="Rotate Left" position="top"><button onClick={() => handleRotateCanvas(-90)} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors"><IconRotateCcw className="w-5 h-5" /></button></Tooltip>
-                            <Tooltip text="Rotate Right" position="top"><button onClick={() => handleRotateCanvas(90)} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors"><IconRotateCw className="w-5 h-5" /></button></Tooltip>
+                            <Tooltip text="Crop" position="top"><button onClick={toggleCrop} className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${isCropping ? 'bg-indigo-600 text-white' : 'bg-gray-900 text-gray-400 hover:text-white'}`}><IconCrop className="w-5 h-5" /></button></Tooltip>
+                            <Tooltip text="Resize" position="top"><button onClick={openResizeDialog} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors"><IconScaling className="w-5 h-5" /></button></Tooltip>
+                            <Tooltip text="Rot Left" position="top"><button onClick={() => handleRotateCanvas(-90)} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors"><IconRotateCcw className="w-5 h-5" /></button></Tooltip>
+                            <Tooltip text="Rot Right" position="top"><button onClick={() => handleRotateCanvas(90)} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors"><IconRotateCw className="w-5 h-5" /></button></Tooltip>
                           </div>
                         )}
                         <div className="grid grid-cols-4 gap-2">
-                          <BrushBtn icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} tooltip="Spray Paint" />
-                          <BrushBtn icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} tooltip="Highlighter / Marker" />
-                          <BrushBtn icon={IconCopy} active={brushType === 'clone'} onClick={() => setBrushType('clone')} tooltip="Clone Stamp Tool" />
-                          <Tooltip text="Brush Settings" position="top"><button onClick={() => setShowBrushSettings(!showBrushSettings)} className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showBrushSettings ? 'bg-indigo-600 text-white' : 'bg-gray-800/60 text-gray-400'}`}><IconSliders className="w-5 h-5" /></button></Tooltip>
+                          <BrushBtn icon={IconSpray} active={brushType === 'spray'} onClick={() => setBrushType('spray')} tooltip="Spray" />
+                          <BrushBtn icon={IconMarker} active={brushType === 'marker'} onClick={() => setBrushType('marker')} tooltip="Marker" />
+                          <BrushBtn icon={IconCopy} active={brushType === 'clone'} onClick={() => setBrushType('clone')} tooltip="Clone" />
+                          <button onClick={() => setShowBrushSettings(!showBrushSettings)} className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${showBrushSettings ? 'bg-indigo-600 text-white' : 'bg-gray-800/60 text-gray-400'}`}><IconSliders className="w-5 h-5" /></button>
                         </div>
 
                         {brushType === 'clone' && (
-                          <button
-                            onClick={() => setIsSettingCloneSource(true)}
-                            className={`w-full py-3 rounded-2xl font-black uppercase text-[9px] tracking-widest transition-all ${isSettingCloneSource ? 'bg-emerald-600 text-white animate-pulse shadow-[0_0_15px_rgba(16,185,129,0.4)]' : 'bg-white/5 text-emerald-400 hover:bg-white/10'}`}
-                          >
-                            {isSettingCloneSource ? 'Click image to set source' : 'Set Clone Source'}
-                          </button>
+                          <button onClick={() => setIsSettingCloneSource(true)} className={`w-full py-2.5 rounded-xl font-black uppercase text-[9px] tracking-widest transition-all ${isSettingCloneSource ? 'bg-emerald-600 text-white animate-pulse' : 'bg-white/5 text-emerald-400 hover:bg-white/10'}`}>{isSettingCloneSource ? 'Click to set source' : 'Set Clone Source'}</button>
                         )}
 
                         <div className="space-y-2 px-1">
-                          <div className="flex justify-between px-0.5"><span className="text-[9px] font-black uppercase text-gray-500">Brush Size</span><span className="text-[10px] font-bold text-indigo-400">{brushSize}px</span></div>
+                          <div className="flex justify-between px-0.5"><span className="text-[8px] font-black uppercase text-gray-500">Size</span><span className="text-[9px] font-bold text-indigo-400">{brushSize}px</span></div>
                           <input type="range" min="2" max="150" value={brushSize} onChange={e => setBrushSize(parseInt(e.target.value))} className="w-full h-1 bg-gray-800 rounded appearance-none cursor-pointer accent-indigo-500" />
                         </div>
 
                         {showBrushSettings && (
                           <div className="space-y-2 animate-fade-in pr-1">
                             <div className="rounded-2xl border border-white/5 overflow-hidden">
-                              <button onClick={() => toggleSection('shape')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Brush Shape{collapsedSections.shape ? <IconChevronRight className="w-3 h-3" /> : <IconChevronDown className="w-3 h-3" />}</button>
-                              {!collapsedSections.shape && <div className="p-3 bg-black/20 flex gap-1 bg-gray-900/50 p-1 rounded-xl m-2">{['round', 'square', 'textured'].map(s => <button key={s} onClick={() => setBrushShape(s as any)} className={`flex-1 py-1.5 text-[9px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${brushShape === s ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'}`}>{s}</button>)}</div>}
+                              <button onClick={() => toggleSection('shape')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[8px] font-black uppercase text-gray-400 tracking-wider">Shape{collapsedSections.shape ? <IconChevronRight className="w-3 h-3" /> : <IconChevronDown className="w-3 h-3" />}</button>
+                              {!collapsedSections.shape && <div className="p-2 bg-black/20 flex gap-1 bg-gray-900/50 p-1 rounded-xl m-1.5">{['round', 'square', 'textured'].map(s => <button key={s} onClick={() => setBrushShape(s as any)} className={`flex-1 py-1.5 text-[8px] font-black uppercase rounded-lg transition-all ${brushShape === s ? 'bg-indigo-600 text-white shadow-sm' : 'text-gray-500 hover:text-gray-300'}`}>{s}</button>)}</div>}
                             </div>
                             <div className="rounded-2xl border border-white/5 overflow-hidden">
-                              <button onClick={() => toggleSection('symmetry')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Symmetry{collapsedSections.symmetry ? <IconChevronRight className="w-3 h-3" /> : <IconChevronDown className="w-3 h-3" />}</button>
+                              <button onClick={() => toggleSection('symmetry')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[8px] font-black uppercase text-gray-400 tracking-wider">Symmetry{collapsedSections.symmetry ? <IconChevronRight className="w-3 h-3" /> : <IconChevronDown className="w-3 h-3" />}</button>
                               {!collapsedSections.symmetry && (
                                 <div className="p-3 bg-black/20 space-y-4">
                                   <div className="grid grid-cols-2 gap-1 bg-gray-900/50 p-1 rounded-xl">
-                                    {[
-                                      { v: 'none', d: 'Normal brush strokes with no mirroring' },
-                                      { v: 'vertical', d: 'Mirrors strokes across a vertical center line' },
-                                      { v: 'horizontal', d: 'Mirrors strokes across a horizontal center line' },
-                                      { v: 'radial', d: 'Repeats strokes in a circular pattern around the center' }
-                                    ].map(item => (
-                                      <Tooltip key={item.v} text={item.d} position="top" className="w-full">
-                                        <button onClick={() => setSymmetry(item.v as any)} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all flex items-center justify-center ${symmetry === item.v ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>{item.v}</button>
-                                      </Tooltip>
+                                    {['none', 'vertical', 'horizontal', 'radial'].map(v => (
+                                        <button key={v} onClick={() => setSymmetry(v as any)} className={`w-full py-1.5 text-[8px] font-black uppercase rounded-lg transition-all ${symmetry === v ? 'bg-indigo-600 text-white' : 'text-gray-500 hover:text-gray-300'}`}>{v}</button>
                                     ))}
                                   </div>
                                   {symmetry === 'radial' && (
                                     <div className="space-y-1">
-                                      <div className="flex justify-between px-0.5"><span className="text-[8px] font-black uppercase text-gray-500">Radial Slices</span><span className="text-[9px] font-bold text-indigo-400">{radialCount}</span></div>
+                                      <div className="flex justify-between px-0.5"><span className="text-[8px] font-black uppercase text-gray-500">Slices</span><span className="text-[9px] font-bold text-indigo-400">{radialCount}</span></div>
                                       <input type="range" min="2" max="12" value={radialCount} onChange={e => setRadialCount(parseInt(e.target.value))} className="w-full h-1 bg-gray-800 rounded accent-indigo-500" />
                                     </div>
                                   )}
@@ -1315,17 +1327,18 @@ const App: React.FC = () => {
                               )}
                             </div>
                             <div className="rounded-2xl border border-white/5 overflow-hidden">
-                              <button onClick={() => toggleSection('advanced')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Dynamics{collapsedSections.advanced ? <IconChevronRight className="w-3 h-3" /> : <IconChevronDown className="w-3 h-3" />}</button>
+                              <button onClick={() => toggleSection('advanced')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[8px] font-black uppercase text-gray-400 tracking-wider">Dynamics{collapsedSections.advanced ? <IconChevronRight className="w-3 h-3" /> : <IconChevronDown className="w-3 h-3" />}</button>
                               {!collapsedSections.advanced && (
                                 <div className="p-3 bg-black/20 space-y-4">
                                   {[
-                                    { l: 'Smoothing', v: brushSmoothing, s: setBrushSmoothing },
+                                    { l: 'Smooth', v: brushSmoothing, s: setBrushSmoothing },
                                     { l: 'Flow', v: brushFlow, s: setBrushFlow },
                                     { l: 'Jitter', v: brushJitter, s: setBrushJitter },
                                     { l: 'Falloff', v: brushFalloff, s: setBrushFalloff }
                                   ].map(item => (
                                     <div key={item.l} className="space-y-1">
                                       <div className="flex justify-between px-0.5"><span className="text-[8px] font-black uppercase text-gray-500">{item.l}</span><span className="text-[9px] font-bold text-indigo-400">{item.v}</span></div>
+                                      {/* FIXED: Using e.target.value instead of item.target.value to avoid runtime error */}
                                       <input type="range" min="0" max="100" value={item.v} onChange={e => item.s(parseInt(e.target.value))} className="w-full h-1 bg-gray-800 rounded accent-indigo-500" />
                                     </div>
                                   ))}
@@ -1333,68 +1346,60 @@ const App: React.FC = () => {
                               )}
                             </div>
                             <div className="rounded-2xl border border-white/5 overflow-hidden">
-                              <button onClick={() => toggleSection('colors')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Palette{collapsedSections.colors ? <IconChevronRight className="w-3 h-3" /> : <IconChevronDown className="w-3 h-3" />}</button>
-                              {!collapsedSections.colors && <div className="p-3 bg-black/20 grid grid-cols-5 gap-2">{['#FFFFFF', '#000000', '#FF0055', '#00E5FF', '#FFD700', '#32CD32', '#FF4500', '#9370DB', '#FF69B4', '#8B4513'].map(c => <button key={c} onClick={() => setBrushColor(c)} className={`w-8 h-8 rounded-xl border border-white/10 hover:scale-110 transition-all ${brushColor === c ? 'ring-2 ring-indigo-500 ring-offset-2 ring-offset-black scale-110' : ''}`} style={{ background: c }} />)}</div>}
+                              <button onClick={() => toggleSection('colors')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[8px] font-black uppercase text-gray-400 tracking-wider">Palette{collapsedSections.colors ? <IconChevronRight className="w-3 h-3" /> : <IconChevronDown className="w-3 h-3" />}</button>
+                              {!collapsedSections.colors && <div className="p-3 bg-black/20 grid grid-cols-5 gap-2">{['#FFFFFF', '#000000', '#FF0055', '#00E5FF', '#FFD700', '#32CD32', '#FF4500', '#9370DB', '#FF69B4', '#8B4513'].map(c => <button key={c} onClick={() => setBrushColor(c)} className={`w-7 h-7 md:w-8 md:h-8 rounded-xl border border-white/10 hover:scale-110 transition-all ${brushColor === c ? 'ring-2 ring-indigo-500 ring-offset-1 ring-offset-black scale-110' : ''}`} style={{ background: c }} />)}</div>}
                             </div>
                           </div>
                         )}
 
                         <div className="flex gap-2 shrink-0">
-                          <Tooltip text="Flush Current Layer" position="top" className="flex-1">
-                            <button onClick={handleClearLayer} className="w-full py-4 flex items-center justify-center rounded-2xl bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"><IconTrash className="w-5 h-5" /></button>
-                          </Tooltip>
-                          <Tooltip text="Automatically segment and remove background" position="top" className="flex-[3]">
-                            <button onClick={handleRemoveBackground} className="w-full py-4 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 rounded-2xl flex items-center justify-center gap-2 border border-indigo-500/20 transition-all active:scale-95 group font-black text-[10px] uppercase tracking-widest"><IconScissors className="w-4 h-4 group-hover:rotate-12 transition-transform" /> Remove BG</button>
-                          </Tooltip>
+                          <Tooltip text="Clear" position="top" className="flex-1"><button onClick={handleClearLayer} className="w-full py-4 flex items-center justify-center rounded-xl md:rounded-2xl bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"><IconTrash className="w-4 h-4 md:w-5 md:h-5" /></button></Tooltip>
+                          <Tooltip text="Segment" position="top" className="flex-[3]"><button onClick={handleRemoveBackground} className="w-full py-4 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 rounded-xl md:rounded-2xl flex items-center justify-center gap-2 border border-indigo-500/20 transition-all font-black text-[9px] uppercase tracking-widest"><IconScissors className="w-4 h-4" /> Remove BG</button></Tooltip>
                         </div>
 
-                        <div className="flex gap-3 shrink-0">
-                          <Tooltip text="Undo (Ctrl+Z)" position="top" className="flex-1">
-                            <button onClick={handleUndo} disabled={historyStep <= 0} className="w-full py-3 bg-gray-900 rounded-2xl text-gray-500 disabled:opacity-20 flex justify-center hover:text-white transition-colors"><IconUndo className="w-4 h-4" /></button>
-                          </Tooltip>
-                          <Tooltip text="Redo (Ctrl+Y)" position="top" className="flex-1">
-                            <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="w-full py-3 bg-gray-900 rounded-2xl text-gray-500 disabled:opacity-20 flex justify-center hover:text-white transition-colors"><IconRedo className="w-4 h-4" /></button>
-                          </Tooltip>
+                        <div className="flex gap-2 md:gap-3 shrink-0">
+                          <button onClick={handleUndo} disabled={historyStep <= 0} className="w-full py-3 bg-gray-900 rounded-xl md:rounded-2xl text-gray-500 disabled:opacity-10 hover:text-white transition-colors flex items-center justify-center"><IconUndo className="w-4 h-4" /></button>
+                          <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="w-full py-3 bg-gray-900 rounded-xl md:rounded-2xl text-gray-500 disabled:opacity-10 hover:text-white transition-colors flex items-center justify-center"><IconRedo className="w-4 h-4" /></button>
                         </div>
                       </div>
                     )}
                   </div>
 
                   {!isCropping ? (
-                    <div className="absolute bottom-24 md:bottom-12 left-0 right-0 z-40 px-6 flex justify-center pointer-events-none">
+                    <div className="absolute bottom-24 md:bottom-12 left-0 right-0 z-40 px-4 md:px-6 flex justify-center pointer-events-none">
                       <div className="w-full max-w-2xl pointer-events-auto">
                         <div className="relative group">
                           <div className="absolute -inset-1 bg-indigo-500/10 rounded-[32px] blur-xl opacity-0 group-hover:opacity-100 transition-all duration-700"></div>
-                          <div className="relative flex items-center gap-4 bg-gray-950/90 backdrop-blur-2xl border border-white/10 rounded-[30px] p-2.5 pl-4 shadow-[0_20px_50px_rgba(0,0,0,0.6)]">
-                            <Tooltip text="Close Session" position="top"><button onClick={() => { setLayers([]); setHistory([]); setHistoryStep(-1); }} className="w-10 h-10 flex items-center justify-center rounded-2xl text-gray-500 hover:text-red-400 transition-colors"><IconX className="w-5 h-5" /></button></Tooltip>
+                          <div className="relative flex items-center gap-2 md:gap-4 bg-gray-950/90 backdrop-blur-2xl border border-white/10 rounded-[25px] md:rounded-[30px] p-2 md:p-2.5 pl-3 md:pl-4 shadow-[0_20px_50px_rgba(0,0,0,0.6)]">
+                            <button onClick={() => { setLayers([]); setHistory([]); setHistoryStep(-1); }} className="w-9 h-9 md:w-10 md:h-10 flex items-center justify-center rounded-xl text-gray-500 hover:text-red-400 transition-colors"><IconX className="w-4 h-4 md:w-5 md:h-5" /></button>
                             <div className="h-6 w-px bg-white/10"></div>
-                            <input type="text" value={editPrompt} onChange={e => setEditPrompt(e.target.value)} placeholder="Describe magic change..." className="flex-1 bg-transparent border-none outline-none text-white font-bold text-sm md:text-base" />
-                            <Tooltip text="Run AI In-painting" position="top">
-                              <button onClick={handleMagicEdit} disabled={isEditing || !editPrompt} className={`h-11 px-8 rounded-[22px] font-black uppercase tracking-widest text-[10px] text-white shadow-xl transition-all flex items-center gap-3 ${isEditing || !editPrompt ? 'bg-gray-800 text-gray-600' : 'bg-indigo-600 hover:bg-indigo-500 active:scale-95'}`}>{isEditing ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <><span className="hidden sm:inline">Apply Magic</span><IconWand className="w-4.5 h-4.5" /></>}</button>
+                            <input type="text" value={editPrompt} onChange={e => setEditPrompt(e.target.value)} placeholder="Prompt magic..." className="flex-1 bg-transparent border-none outline-none text-white font-bold text-xs md:text-base placeholder:text-gray-600" />
+                            <Tooltip text="Process" position="top">
+                              <button onClick={handleMagicEdit} disabled={isEditing || !editPrompt} className={`h-10 md:h-11 px-6 md:px-8 rounded-[20px] md:rounded-[22px] font-black uppercase tracking-widest text-[9px] md:text-[10px] text-white shadow-xl transition-all flex items-center gap-3 ${isEditing || !editPrompt ? 'bg-gray-800 text-gray-600' : 'bg-indigo-600 hover:bg-indigo-500 active:scale-95'}`}>{isEditing ? <div className="w-3.5 h-3.5 md:w-4 md:h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <><span className="hidden sm:inline">Apply</span><IconWand className="w-4 h-4 md:w-4.5 md:h-4.5" /></>}</button>
                             </Tooltip>
                           </div>
                         </div>
                       </div>
                     </div>
                   ) : (
-                    <div className="absolute bottom-24 md:bottom-12 left-0 right-0 z-40 px-6 flex justify-center pointer-events-none">
-                      <div className="pointer-events-auto flex gap-4 bg-gray-950/90 backdrop-blur-xl border border-white/10 rounded-full p-2 pr-6 shadow-2xl">
-                        <button onClick={toggleCrop} className="w-12 h-12 flex items-center justify-center rounded-full text-gray-500 hover:text-red-400 hover:bg-white/5 transition-all"><IconX className="w-6 h-6" /></button>
-                        <div className="h-12 w-px bg-white/10"></div>
-                        <button onClick={applyCrop} className="flex items-center gap-3 h-12 px-8 bg-indigo-600 text-white rounded-full font-black uppercase text-xs tracking-widest hover:bg-indigo-500 transition-all shadow-lg active:scale-95"><IconCheck className="w-5 h-5" /> Apply Crop</button>
+                    <div className="absolute bottom-24 md:bottom-12 left-0 right-0 z-40 px-4 flex justify-center pointer-events-none">
+                      <div className="pointer-events-auto flex gap-3 md:gap-4 bg-gray-950/90 backdrop-blur-xl border border-white/10 rounded-full p-2 pr-5 md:pr-6 shadow-2xl">
+                        <button onClick={toggleCrop} className="w-10 h-10 md:w-12 md:h-12 flex items-center justify-center rounded-full text-gray-500 hover:text-red-400 transition-all"><IconX className="w-5 h-5 md:w-6 md:h-6" /></button>
+                        <div className="h-10 md:h-12 w-px bg-white/10"></div>
+                        <button onClick={applyCrop} className="flex items-center gap-2 md:gap-3 h-10 md:h-12 px-6 md:px-8 bg-indigo-600 text-white rounded-full font-black uppercase text-[10px] md:text-xs tracking-widest hover:bg-indigo-500 transition-all shadow-lg active:scale-95"><IconCheck className="w-4 h-4 md:w-5 md:h-5" /> Crop</button>
                       </div>
                     </div>
                   )}
                 </div>
                 {editedImages.length > 0 && (
-                  <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur flex items-center justify-center p-6 animate-fade-in">
-                    <div className="bg-[#0c0c0e] rounded-[40px] p-8 max-w-2xl w-full border border-white/10 relative shadow-2xl">
-                      <button onClick={() => setEditedImages([])} className="absolute -top-4 -right-4 p-3 bg-gray-900 rounded-2xl text-white shadow-xl transition-all hover:rotate-90"><IconX className="w-5 h-5" /></button>
-                      <h2 className="text-2xl font-black uppercase mb-8 text-white tracking-widest">Magic Result</h2>
+                  <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur flex items-center justify-center p-4 md:p-6 animate-fade-in">
+                    <div className="bg-[#0c0c0e] rounded-[30px] md:rounded-[40px] p-6 md:p-8 max-w-2xl w-full border border-white/10 relative shadow-2xl overflow-hidden">
+                      <button onClick={() => setEditedImages([])} className="absolute top-4 right-4 p-2 bg-gray-900 rounded-xl text-white shadow-xl hover:rotate-90 transition-transform"><IconX className="w-5 h-5" /></button>
+                      <h2 className="text-xl md:text-2xl font-black uppercase mb-6 md:mb-8 text-white tracking-widest">Magic Result</h2>
                       <div className="grid grid-cols-1 gap-6">
                         {editedImages.map((src, i) => (
-                          <div key={i} className="relative rounded-[32px] overflow-hidden group bg-black shadow-2xl border border-white/5">
-                            <img src={src} className="w-full max-h-[50vh] object-contain" alt="AI Edited Result" /><div className="absolute bottom-6 left-6 right-6 flex gap-4 opacity-0 group-hover:opacity-100 transition-all translate-y-2 group-hover:translate-y-0"><button onClick={() => handleApplyResult(src)} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-2xl flex items-center justify-center gap-3 hover:bg-indigo-500 transition-all active:scale-95"><IconCheck className="w-5 h-5" /> Add as Layer</button><button onClick={() => downloadImage(src, 'magic.png')} className="py-4 px-6 bg-white/10 backdrop-blur-md text-white rounded-2xl border border-white/20 hover:bg-white/20 transition-all"><IconDownload className="w-5 h-5" /></button></div>
+                          <div key={i} className="relative rounded-[25px] md:rounded-[32px] overflow-hidden group bg-black shadow-2xl border border-white/5">
+                            <img src={src} className="w-full max-h-[50vh] object-contain" alt="AI Result" /><div className="absolute bottom-4 md:bottom-6 left-4 md:left-6 right-4 md:right-6 flex gap-3 md:gap-4 opacity-0 group-hover:opacity-100 transition-all translate-y-2 group-hover:translate-y-0"><button onClick={() => handleApplyResult(src)} className="flex-1 py-3 md:py-4 bg-indigo-600 text-white rounded-xl md:rounded-2xl font-black uppercase text-[9px] md:text-[10px] tracking-widest shadow-2xl flex items-center justify-center gap-2 md:gap-3 hover:bg-indigo-500 active:scale-95 transition-all"><IconCheck className="w-4 h-4 md:w-5 md:h-5" /> Layer</button><button onClick={() => downloadImage(src, 'magic.png')} className="py-3 md:py-4 px-5 md:px-6 bg-white/10 backdrop-blur-md text-white rounded-xl md:rounded-2xl border border-white/20 hover:bg-white/20 transition-all"><IconDownload className="w-4 h-4 md:w-5 md:h-5" /></button></div>
                           </div>
                         ))}
                       </div>
@@ -1409,25 +1414,25 @@ const App: React.FC = () => {
         {mode === AppMode.GALLERY && (
           <div className="flex-1 overflow-y-auto p-6 animate-fade-in pb-32">
             <div className="max-w-6xl mx-auto"><h2 className="text-3xl font-black tracking-tight mb-8 text-white">Magic Gallery</h2>
-              {galleryItems.length === 0 ? <div className="text-center py-32 text-gray-500"><div className="flex items-center justify-center mb-4 opacity-20"><IconHistory className="w-16 h-16" /></div><p>Your creations will appear here.</p></div> : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">{galleryItems.map(item => (
-                <div key={item.id} className="group relative bg-gray-900/50 rounded-[32px] overflow-hidden border border-white/5 shadow-xl transition-all hover:scale-[1.02] hover:shadow-indigo-500/5"><img src={item.src} className="w-full h-64 object-cover" alt="Gallery item" /><div className="p-6"><div className="flex justify-between items-start mb-3"><span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${item.type === 'generated' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-purple-500/20 text-purple-400'}`}>{item.type}</span><span className="text-[10px] text-gray-600 font-bold">{new Date(item.timestamp).toLocaleDateString()}</span></div><p className="text-sm text-gray-300 font-medium line-clamp-2">{item.prompt}</p></div><div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4"><button onClick={() => downloadImage(item.src, 'gallery.png')} className="p-4 bg-white/10 backdrop-blur rounded-full text-white hover:scale-110 transition-all"><IconDownload className="w-6 h-6" /></button><button onClick={() => { if (confirm('Delete?')) deleteItem(item.id).then(loadGallery); }} className="p-4 bg-red-500/20 rounded-full text-red-400 hover:scale-110 transition-all"><IconTrash className="w-6 h-6" /></button></div></div>
+              {galleryItems.length === 0 ? <div className="text-center py-32 text-gray-500"><div className="flex items-center justify-center mb-4 opacity-20"><IconHistory className="w-16 h-16" /></div><p className="font-medium">Your creations will appear here.</p></div> : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">{galleryItems.map(item => (
+                <div key={item.id} className="group relative bg-gray-900/50 backdrop-blur border border-white/5 rounded-[30px] md:rounded-[32px] overflow-hidden shadow-xl transition-all hover:scale-[1.02]"><img src={item.src} className="w-full h-56 md:h-64 object-cover" alt="Gallery item" /><div className="p-5 md:p-6"><div className="flex justify-between items-start mb-3"><span className={`text-[8px] md:text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${item.type === 'generated' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-purple-500/20 text-purple-400'}`}>{item.type}</span><span className="text-[9px] md:text-[10px] text-gray-600 font-bold">{new Date(item.timestamp).toLocaleDateString()}</span></div><p className="text-sm text-gray-300 font-medium line-clamp-2 leading-relaxed">{item.prompt}</p></div><div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4"><button onClick={() => downloadImage(item.src, 'gallery.png')} className="p-3.5 md:p-4 bg-white/10 backdrop-blur rounded-full text-white hover:scale-110 transition-all"><IconDownload className="w-5 h-5 md:w-6 md:h-6" /></button><button onClick={() => { if (confirm('Delete?')) deleteItem(item.id).then(loadGallery); }} className="p-3.5 md:p-4 bg-red-500/20 rounded-full text-red-400 hover:scale-110 transition-all"><IconTrash className="w-5 h-5 md:w-6 md:h-6" /></button></div></div>
               ))}</div>}
             </div>
           </div>
         )}
       </main>
 
-      <div className="fixed bottom-0 left-0 right-0 bg-black/90 backdrop-blur-lg border-t border-white/5 md:hidden z-40 pb-safe">
-        <div className="flex justify-around p-4">
-          <NavBtn active={mode === AppMode.GENERATE} onClick={() => setMode(AppMode.GENERATE)} icon={<IconWand />} label="Create" tooltip="AI Image Generation" />
-          <NavBtn active={mode === AppMode.EDIT} onClick={() => setMode(AppMode.EDIT)} icon={<IconPen />} label="Editor" tooltip="Magic Image Editor" />
-          <NavBtn active={mode === AppMode.GALLERY} onClick={() => setMode(AppMode.GALLERY)} icon={<IconHistory />} label="Gallery" tooltip="Your Creative History" />
+      <div className="fixed bottom-0 left-0 right-0 bg-black/95 backdrop-blur-xl border-t border-white/5 md:hidden z-40 pb-safe shadow-[0_-10px_30px_rgba(0,0,0,0.5)]">
+        <div className="flex justify-around p-3 md:p-4">
+          <NavBtn active={mode === AppMode.GENERATE} onClick={() => setMode(AppMode.GENERATE)} icon={<IconWand className="w-5 h-5" />} label="Create" tooltip="Image AI" />
+          <NavBtn active={mode === AppMode.EDIT} onClick={() => setMode(AppMode.EDIT)} icon={<IconPen className="w-5 h-5" />} label="Editor" tooltip="Magic Edit" />
+          <NavBtn active={mode === AppMode.GALLERY} onClick={() => setMode(AppMode.GALLERY)} icon={<IconHistory className="w-5 h-5" />} label="Gallery" tooltip="History" />
         </div>
       </div>
       <div className="hidden md:flex fixed left-8 top-1/2 -translate-y-1/2 flex-col gap-6 bg-[#0c0c0e]/80 backdrop-blur-2xl border border-white/10 p-3 rounded-[32px] shadow-2xl z-50">
-        <NavBtn active={mode === AppMode.GENERATE} onClick={() => setMode(AppMode.GENERATE)} icon={<IconWand />} label="Create" vertical tooltip="AI Image Generation" />
-        <NavBtn active={mode === AppMode.EDIT} onClick={() => setMode(AppMode.EDIT)} icon={<IconPen />} label="Editor" vertical tooltip="Magic Image Editor" />
-        <NavBtn active={mode === AppMode.GALLERY} onClick={() => setMode(AppMode.GALLERY)} icon={<IconHistory />} label="Gallery" vertical tooltip="Your Creative History" />
+        <NavBtn active={mode === AppMode.GENERATE} onClick={() => setMode(AppMode.GENERATE)} icon={<IconWand />} label="Create" vertical tooltip="AI Creation" />
+        <NavBtn active={mode === AppMode.EDIT} onClick={() => setMode(AppMode.EDIT)} icon={<IconPen />} label="Editor" vertical tooltip="Editor" />
+        <NavBtn active={mode === AppMode.GALLERY} onClick={() => setMode(AppMode.GALLERY)} icon={<IconHistory />} label="Gallery" vertical tooltip="Archive" />
       </div>
     </div>
   );
