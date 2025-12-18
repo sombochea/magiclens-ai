@@ -995,7 +995,7 @@ const App: React.FC = () => {
                 <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center shadow-lg"><IconWand className="text-white w-7 h-7" /></div>
                 <div>
                   <h2 className="text-3xl font-black tracking-tight text-white">MagicLens AI</h2>
-                  <span className="text-indigo-400 font-bold uppercase text-[10px] tracking-[0.2em]">Creative Suite v1.0 <span className="inline-flex items-center rounded-md bg-indigo-500/10 px-1 py-0.5 text-[8px] text-indigo-400 ring-1 ring-inset ring-indigo-500/20 ml-1">v0.1-beta</span></span>
+                  <span className="text-indigo-400 font-bold uppercase text-[10px] tracking-[0.2em]">Creative Suite v1.0 <span className="inline-flex items-center rounded-md bg-indigo-500/10 px-1 py-0.5 text-[8px] text-indigo-400 ring-1 ring-inset ring-indigo-500/20 ml-1">beta</span></span>
                 </div>
               </div>
 
