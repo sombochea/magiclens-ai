@@ -10,7 +10,7 @@ import {
   IconSave, IconRestore, IconScissors, IconCheck, IconLayers,
   IconEye, IconEyeOff, IconPlus, IconArrowUp, IconArrowDown, IconImage,
   IconSliders, IconCrop, IconRotateCw, IconRotateCcw, IconScaling,
-  IconFlipCamera, IconChevronDown, IconChevronRight, IconCopy
+  IconFlipCamera, IconChevronDown, IconChevronRight, IconCopy, IconInfo
 } from './components/Icons';
 
 const SUGGESTED_PROMPTS = [
@@ -22,7 +22,7 @@ const SUGGESTED_PROMPTS = [
   "A group of astronauts playing poker on the moon"
 ];
 
-// Reusable Tooltip Component - Fixed: Using React.FC to properly handle 'key' and other React props
+// Reusable Tooltip Component
 const Tooltip: React.FC<{ children?: React.ReactNode, text: string, position?: 'top' | 'bottom' | 'left' | 'right', className?: string }> = ({ children, text, position = 'bottom', className = '' }) => {
   const posClasses = {
     top: 'bottom-full left-1/2 -translate-x-1/2 mb-2',
@@ -149,6 +149,7 @@ const App: React.FC = () => {
   const [isDrawing, setIsDrawing] = useState(false);
   const [brushColor, setBrushColor] = useState('#FF0055');
   const [brushSize, setBrushSize] = useState(20);
+  const [brushSmoothing, setBrushSmoothing] = useState(30); // 0 to 100
   const [brushType, setBrushType] = useState<'pen' | 'spray' | 'marker' | 'eraser' | 'pan' | 'clone'>('pen');
   const [brushShape, setBrushShape] = useState<'round' | 'square' | 'textured'>('round');
   const [brushJitter, setBrushJitter] = useState(0); 
@@ -174,6 +175,7 @@ const App: React.FC = () => {
   const [galleryItems, setGalleryItems] = useState<HistoryItem[]>([]);
   const [hasSavedSession, setHasSavedSession] = useState(false);
   const [draggedLayerIndex, setDraggedLayerIndex] = useState<number | null>(null);
+  const [showInfoModal, setShowInfoModal] = useState(false);
   
   // Clone Stamp State
   const [cloneSource, setCloneSource] = useState<{x: number, y: number} | null>(null);
@@ -187,6 +189,7 @@ const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastDrawPointRef = useRef<{x: number, y: number} | null>(null);
+  const smoothedPointRef = useRef<{x: number, y: number} | null>(null);
   const strokeDistanceRef = useRef(0);
   const rafIdRef = useRef<number | null>(null);
   const needsCompositeRef = useRef<boolean>(false);
@@ -289,7 +292,10 @@ const App: React.FC = () => {
     return () => { if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current); };
   }, [renderCompositeCanvas]);
 
-  useEffect(() => { needsCompositeRef.current = true; }, [layers, canvasSize, previewBlendMode, activeLayerId]);
+  // CRITICAL: Redraw whenever mode changes back to EDIT, or standard state variables change
+  useEffect(() => { 
+    needsCompositeRef.current = true; 
+  }, [layers, canvasSize, previewBlendMode, activeLayerId, mode]);
 
   const toggleCameraFacing = () => {
     const next = facingMode === 'user' ? 'environment' : 'user';
@@ -521,6 +527,7 @@ const App: React.FC = () => {
 
     setIsDrawing(true);
     strokeDistanceRef.current = 0; 
+    smoothedPointRef.current = { x, y };
     const ctx = layer.canvas.getContext('2d');
     if (!ctx) return;
     
@@ -621,18 +628,28 @@ const App: React.FC = () => {
     if (!ctx) return;
 
     const rect = cachedBoundingRectRef.current;
-    let x = (cx - rect.left) * (canvasRef.current.width / rect.width);
-    let y = (cy - rect.top) * (canvasRef.current.height / rect.height);
+    let targetX = (cx - rect.left) * (canvasRef.current.width / rect.width);
+    let targetY = (cy - rect.top) * (canvasRef.current.height / rect.height);
     
+    // Brush Smoothing Logic
+    const smoothingFactor = 1 - (brushSmoothing / 100);
+    const lastSmoothed = smoothedPointRef.current || { x: targetX, y: targetY };
+    const x = lastSmoothed.x + (targetX - lastSmoothed.x) * Math.max(0.01, smoothingFactor);
+    const y = lastSmoothed.y + (targetY - lastSmoothed.y) * Math.max(0.01, smoothingFactor);
+    smoothedPointRef.current = { x, y };
+
+    let drawX = x;
+    let drawY = y;
+
     if (brushJitter > 0) { 
-        x += (Math.random() - 0.5) * brushJitter; 
-        y += (Math.random() - 0.5) * brushJitter; 
+        drawX += (Math.random() - 0.5) * brushJitter; 
+        drawY += (Math.random() - 0.5) * brushJitter; 
     }
     
     const last = lastDrawPointRef.current;
     if (last) {
-        const dx = x - last.x;
-        const dy = y - last.y;
+        const dx = drawX - last.x;
+        const dy = drawY - last.y;
         const dist = Math.sqrt(dx*dx + dy*dy);
         strokeDistanceRef.current += dist;
         
@@ -641,14 +658,14 @@ const App: React.FC = () => {
         if (brushFalloff > 0) alpha *= Math.max(0, 1 - (strokeDistanceRef.current / (3000 / (brushFalloff * 0.5 || 1))));
         ctx.globalAlpha = alpha;
 
-        const points = getSymmetricPoints(x, y);
+        const points = getSymmetricPoints(drawX, drawY);
         const lastPoints = getSymmetricPoints(last.x, last.y);
 
         if (brushType === 'clone') {
             const steps = Math.ceil(dist / (brushSize / 4));
             for (let s = 1; s <= steps; s++) {
-                const lerpX = last.x + (x - last.x) * (s / steps);
-                const lerpY = last.y + (y - last.y) * (s / steps);
+                const lerpX = last.x + (drawX - last.x) * (s / steps);
+                const lerpY = last.y + (drawY - last.y) * (s / steps);
                 paintClone(ctx, getSymmetricPoints(lerpX, lerpY));
             }
         } else if (brushType === 'spray') {
@@ -675,7 +692,7 @@ const App: React.FC = () => {
         }
     }
 
-    lastDrawPointRef.current = { x, y };
+    lastDrawPointRef.current = { x: drawX, y: drawY };
     needsCompositeRef.current = true;
   };
 
@@ -683,7 +700,13 @@ const App: React.FC = () => {
     setIsPanning(false);
     if (isCropping) setCropHandle(null);
     cachedBoundingRectRef.current = null;
-    if (isDrawing) { setIsDrawing(false); lastDrawPointRef.current = null; strokeDistanceRef.current = 0; saveHistory(); }
+    if (isDrawing) { 
+        setIsDrawing(false); 
+        lastDrawPointRef.current = null; 
+        smoothedPointRef.current = null;
+        strokeDistanceRef.current = 0; 
+        saveHistory(); 
+    }
   };
 
   const saveHistory = (currentLayers: Layer[] = layers, w: number = canvasSize.width, h: number = canvasSize.height) => {
@@ -830,7 +853,7 @@ const App: React.FC = () => {
   };
   
   const handleDragStart = (e: React.PointerEvent) => {
-    // Only start drag if not on interactive elements
+    // Only start drag if not on interactive elements to prevent accidental movement
     if ((e.target as HTMLElement).closest('button, input, [role="button"], label')) return;
     
     setIsDraggingToolbar(true);
@@ -915,10 +938,59 @@ const App: React.FC = () => {
           </div>
       )}
 
+      {showInfoModal && (
+        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-lg flex items-center justify-center p-6 animate-fade-in">
+           <div className="bg-[#0f0f11] border border-white/10 rounded-[40px] p-10 max-w-xl w-full shadow-2xl relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-4">
+                 <button onClick={() => setShowInfoModal(false)} className="p-2 text-gray-500 hover:text-white transition-colors"><IconX className="w-6 h-6" /></button>
+              </div>
+              <div className="absolute -top-20 -left-20 w-64 h-64 bg-indigo-500/10 blur-[100px] rounded-full"></div>
+              
+              <div className="space-y-8 relative">
+                 <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center shadow-lg"><IconWand className="text-white w-7 h-7" /></div>
+                    <div>
+                       <h2 className="text-3xl font-black tracking-tight text-white">MagicLens AI</h2>
+                       <p className="text-indigo-400 font-bold uppercase text-[10px] tracking-[0.2em]">Creative Suite v1.2</p>
+                    </div>
+                 </div>
+
+                 <div className="space-y-4">
+                    <p className="text-gray-300 leading-relaxed font-medium">MagicLens AI is a high-performance creative suite designed for the next generation of visual artists. Experience seamless image generation and powerful AI-assisted editing tools.</p>
+                    <div className="grid grid-cols-2 gap-4 pt-4">
+                       {[
+                         {t: 'AI Generation', d: 'Prompt-to-image with Gemini 3 Pro.'},
+                         {t: 'Magic Edit', d: 'Natural language in-painting.'},
+                         {t: 'Pro Canvas', d: 'Multi-layer system & blend modes.'},
+                         {t: 'Clean Strokes', d: 'Advanced brush smoothing engine.'}
+                       ].map((f, i) => (
+                         <div key={i} className="p-4 bg-white/5 rounded-2xl border border-white/5">
+                            <h4 className="text-[10px] font-black uppercase text-indigo-400 mb-1">{f.t}</h4>
+                            <p className="text-[11px] text-gray-500 leading-tight">{f.d}</p>
+                         </div>
+                       ))}
+                    </div>
+                 </div>
+
+                 <div className="pt-8 border-t border-white/5 flex flex-col items-center gap-3">
+                    <p className="text-xs text-gray-400 font-bold tracking-wide">Built with love <span className="text-red-500">❤️</span> by <span className="text-white">Sambo Chea</span></p>
+                    <div className="px-4 py-1.5 bg-gray-900 rounded-full border border-white/5 flex items-center gap-2">
+                       <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+                       <span className="text-[9px] font-black uppercase tracking-widest text-gray-500">Powered by Google Gemini API</span>
+                    </div>
+                 </div>
+              </div>
+           </div>
+        </div>
+      )}
+
       <header className="p-4 border-b border-gray-800 flex items-center justify-between bg-black/80 backdrop-blur-md z-30 shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-indigo-500 to-purple-500 flex items-center justify-center shadow-lg"><IconWand className="text-white w-5 h-5" /></div>
           <h1 className="text-xl font-black tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-indigo-400 to-purple-400">MagicLens</h1>
+        </div>
+        <div className="flex items-center gap-2">
+           <button onClick={() => setShowInfoModal(true)} className="p-2 text-gray-400 hover:text-white hover:bg-white/5 rounded-xl transition-all flex items-center justify-center"><IconInfo className="w-5 h-5" /></button>
         </div>
       </header>
 
@@ -1076,8 +1148,8 @@ const App: React.FC = () => {
                     </div>
                     {isEditing && <ProcessingOverlay text="AI Woven Magic..."/>}
                     <div className="absolute right-6 top-1/2 -translate-y-1/2 flex flex-col gap-2 p-2 bg-black/60 backdrop-blur-xl rounded-full border border-white/10 shadow-2xl z-20">
-                      <Tooltip text="Zoom In" position="left"><button onClick={handleZoomIn} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors"><IconZoomIn className="w-5 h-5"/></button></Tooltip>
-                      <Tooltip text="Zoom Out" position="left"><button onClick={handleZoomOut} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors"><IconZoomOut className="w-5 h-5"/></button></Tooltip>
+                      <Tooltip text="Zoom In" position="left"><button onClick={handleZoomIn} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors flex items-center justify-center"><IconZoomIn className="w-5 h-5"/></button></Tooltip>
+                      <Tooltip text="Zoom Out" position="left"><button onClick={handleZoomOut} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-white transition-colors flex items-center justify-center"><IconZoomOut className="w-5 h-5"/></button></Tooltip>
                       <Tooltip text="Reset Zoom" position="left"><button onClick={handleResetZoom} className="w-10 h-10 flex items-center justify-center text-gray-300 hover:text-indigo-400 border-t border-white/5 mt-2 flex items-center justify-center"><div className="w-1.5 h-1.5 rounded-full bg-current"/></button></Tooltip>
                     </div>
                     
@@ -1145,12 +1217,12 @@ const App: React.FC = () => {
                         )}
                     </div>
 
-                    <div ref={toolbarRef} onPointerDown={handleDragStart} onPointerMove={handleDragMove} onPointerUp={handleDragEnd} onPointerCancel={handleDragEnd} style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }} className={`absolute right-96 top-6 w-72 bg-black/90 backdrop-blur-xl rounded-[32px] border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing z-30 overflow-hidden ${isToolbarMinimized ? 'p-2' : 'p-4'}`}>
+                    <div ref={toolbarRef} onPointerDown={handleDragStart} onPointerMove={handleDragMove} onPointerUp={handleDragEnd} onPointerCancel={handleDragEnd} style={{ transform: `translate(${toolbarPos.x}px, ${toolbarPos.y}px)` }} className={`absolute right-[340px] top-6 w-72 bg-black/90 backdrop-blur-xl rounded-[32px] border border-white/10 shadow-2xl flex flex-col gap-2 cursor-grab active:cursor-grabbing z-30 overflow-hidden ${isToolbarMinimized ? 'p-2' : 'p-4'}`}>
                         <div className="flex justify-between items-center gap-4 shrink-0" onPointerDown={e => e.stopPropagation()}>
                            <div className="p-1 opacity-40 flex items-center justify-center" onPointerDown={handleDragStart}><IconMove className="w-4 h-4 text-gray-400" /></div>
                            <div className="flex gap-2">
-                             <Tooltip text="Save Project" position="top"><button onClick={saveSession} className="text-gray-500 hover:text-emerald-400 transition-colors flex items-center justify-center"><IconSave className="w-4 h-4" /></button></Tooltip>
-                             <Tooltip text={isToolbarMinimized ? "Expand Toolbar" : "Minimize Toolbar"} position="top"><button onClick={() => setIsToolbarMinimized(!isToolbarMinimized)} className="text-gray-500 hover:text-white flex items-center justify-center">{isToolbarMinimized ? <IconMaximize className="w-4 h-4"/> : <IconMinimize className="w-4 h-4" />}</button></Tooltip>
+                             <Tooltip text="Save Project" position="top"><button onClick={saveSession} className="text-gray-500 hover:text-emerald-400 transition-colors flex items-center justify-center flex items-center justify-center"><IconSave className="w-4 h-4" /></button></Tooltip>
+                             <Tooltip text={isToolbarMinimized ? "Expand Toolbar" : "Minimize Toolbar"} position="top"><button onClick={() => setIsToolbarMinimized(!isToolbarMinimized)} className="text-gray-500 hover:text-white flex items-center justify-center flex items-center justify-center">{isToolbarMinimized ? <IconMaximize className="w-4 h-4"/> : <IconMinimize className="w-4 h-4" />}</button></Tooltip>
                            </div>
                         </div>
                         {!isToolbarMinimized && (
@@ -1166,9 +1238,9 @@ const App: React.FC = () => {
                             {showToolsMenu && (
                                 <div className="grid grid-cols-4 gap-2 p-2 bg-white/5 rounded-2xl animate-fade-in border border-white/5">
                                     <Tooltip text="Crop Canvas" position="top"><button onClick={toggleCrop} className={`w-10 h-10 flex items-center justify-center rounded-xl transition-all ${isCropping ? 'bg-indigo-600 text-white' : 'bg-gray-900 text-gray-400 hover:text-white'}`}><IconCrop className="w-5 h-5"/></button></Tooltip>
-                                    <Tooltip text="Resize Image" position="top"><button onClick={openResizeDialog} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors"><IconScaling className="w-5 h-5"/></button></Tooltip>
-                                    <Tooltip text="Rotate Left" position="top"><button onClick={() => handleRotateCanvas(-90)} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors"><IconRotateCcw className="w-5 h-5"/></button></Tooltip>
-                                    <Tooltip text="Rotate Right" position="top"><button onClick={() => handleRotateCanvas(90)} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors"><IconRotateCw className="w-5 h-5"/></button></Tooltip>
+                                    <Tooltip text="Resize Image" position="top"><button onClick={openResizeDialog} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors flex items-center justify-center"><IconScaling className="w-5 h-5"/></button></Tooltip>
+                                    <Tooltip text="Rotate Left" position="top"><button onClick={() => handleRotateCanvas(-90)} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors flex items-center justify-center"><IconRotateCcw className="w-5 h-5"/></button></Tooltip>
+                                    <Tooltip text="Rotate Right" position="top"><button onClick={() => handleRotateCanvas(90)} className="w-10 h-10 flex items-center justify-center bg-gray-900 rounded-xl text-gray-400 hover:text-white transition-colors flex items-center justify-center"><IconRotateCw className="w-5 h-5"/></button></Tooltip>
                                 </div>
                             )}
                             <div className="grid grid-cols-4 gap-2">
@@ -1225,7 +1297,21 @@ const App: React.FC = () => {
                                     </div>
                                     <div className="rounded-2xl border border-white/5 overflow-hidden">
                                         <button onClick={() => toggleSection('advanced')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Dynamics{collapsedSections.advanced ? <IconChevronRight className="w-3 h-3"/> : <IconChevronDown className="w-3 h-3"/>}</button>
-                                        {!collapsedSections.advanced && <div className="p-3 bg-black/20 space-y-4">{[{l:'Flow',v:brushFlow,s:setBrushFlow},{l:'Jitter',v:brushJitter,s:setBrushJitter},{l:'Falloff',v:brushFalloff,s:setBrushFalloff}].map(item => <div key={item.l} className="space-y-1"><div className="flex justify-between px-0.5"><span className="text-[8px] font-black uppercase text-gray-500">{item.l}</span><span className="text-[9px] font-bold text-indigo-400">{item.v}</span></div><input type="range" min="0" max="100" value={item.v} onChange={e => item.s(parseInt(e.target.value))} className="w-full h-1 bg-gray-800 rounded accent-indigo-500"/></div>)}</div>}
+                                        {!collapsedSections.advanced && (
+                                          <div className="p-3 bg-black/20 space-y-4">
+                                            {[
+                                              {l:'Smoothing',v:brushSmoothing,s:setBrushSmoothing},
+                                              {l:'Flow',v:brushFlow,s:setBrushFlow},
+                                              {l:'Jitter',v:brushJitter,s:setBrushJitter},
+                                              {l:'Falloff',v:brushFalloff,s:setBrushFalloff}
+                                            ].map(item => (
+                                              <div key={item.l} className="space-y-1">
+                                                <div className="flex justify-between px-0.5"><span className="text-[8px] font-black uppercase text-gray-500">{item.l}</span><span className="text-[9px] font-bold text-indigo-400">{item.v}</span></div>
+                                                <input type="range" min="0" max="100" value={item.v} onChange={e => item.s(parseInt(e.target.value))} className="w-full h-1 bg-gray-800 rounded accent-indigo-500"/>
+                                              </div>
+                                            ))}
+                                          </div>
+                                        )}
                                     </div>
                                     <div className="rounded-2xl border border-white/5 overflow-hidden">
                                         <button onClick={() => toggleSection('colors')} className="w-full px-3 py-2 flex justify-between items-center bg-white/5 text-[9px] font-black uppercase text-gray-400 tracking-wider">Palette{collapsedSections.colors ? <IconChevronRight className="w-3 h-3"/> : <IconChevronDown className="w-3 h-3"/>}</button>
@@ -1234,21 +1320,21 @@ const App: React.FC = () => {
                                 </div>
                             )}
                             
-                            <div className="flex gap-2">
+                            <div className="flex gap-2 shrink-0">
                                 <Tooltip text="Flush Current Layer" position="top" className="flex-1">
-                                    <button onClick={handleClearLayer} className="w-full py-4 flex items-center justify-center rounded-2xl bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all"><IconTrash className="w-5 h-5"/></button>
+                                    <button onClick={handleClearLayer} className="w-full py-4 flex items-center justify-center rounded-2xl bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all flex items-center justify-center flex items-center justify-center"><IconTrash className="w-5 h-5"/></button>
                                 </Tooltip>
                                 <Tooltip text="Automatically segment and remove background" position="top" className="flex-[3]">
-                                    <button onClick={handleRemoveBackground} className="w-full py-4 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 rounded-2xl flex items-center justify-center gap-2 border border-indigo-500/20 transition-all active:scale-95 group font-black text-[10px] uppercase tracking-widest"><IconScissors className="w-4 h-4 group-hover:rotate-12 transition-transform" /> Remove BG</button>
+                                    <button onClick={handleRemoveBackground} className="w-full py-4 bg-indigo-600/10 hover:bg-indigo-600/20 text-indigo-400 rounded-2xl flex items-center justify-center gap-2 border border-indigo-500/20 transition-all active:scale-95 group font-black text-[10px] uppercase tracking-widest flex items-center justify-center flex items-center justify-center"><IconScissors className="w-4 h-4 group-hover:rotate-12 transition-transform" /> Remove BG</button>
                                 </Tooltip>
                             </div>
                             
-                            <div className="flex gap-3">
+                            <div className="flex gap-3 shrink-0">
                               <Tooltip text="Undo (Ctrl+Z)" position="top" className="flex-1">
-                                <button onClick={handleUndo} disabled={historyStep <= 0} className="w-full py-3 bg-gray-900 rounded-2xl text-gray-500 disabled:opacity-20 flex justify-center hover:text-white transition-colors flex items-center justify-center"><IconUndo className="w-4 h-4"/></button>
+                                <button onClick={handleUndo} disabled={historyStep <= 0} className="w-full py-3 bg-gray-900 rounded-2xl text-gray-500 disabled:opacity-20 flex justify-center hover:text-white transition-colors flex items-center justify-center flex items-center justify-center"><IconUndo className="w-4 h-4"/></button>
                               </Tooltip>
                               <Tooltip text="Redo (Ctrl+Y)" position="top" className="flex-1">
-                                <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="w-full py-3 bg-gray-900 rounded-2xl text-gray-500 disabled:opacity-20 flex justify-center hover:text-white transition-colors flex items-center justify-center"><IconRedo className="w-4 h-4"/></button>
+                                <button onClick={handleRedo} disabled={historyStep >= history.length - 1} className="w-full py-3 bg-gray-900 rounded-2xl text-gray-500 disabled:opacity-20 flex justify-center hover:text-white transition-colors flex items-center justify-center flex items-center justify-center"><IconRedo className="w-4 h-4"/></button>
                               </Tooltip>
                             </div>
                           </div>
@@ -1261,11 +1347,11 @@ const App: React.FC = () => {
                            <div className="relative group">
                               <div className="absolute -inset-1 bg-indigo-500/10 rounded-[32px] blur-xl opacity-0 group-hover:opacity-100 transition-all duration-700"></div>
                               <div className="relative flex items-center gap-4 bg-gray-950/90 backdrop-blur-2xl border border-white/10 rounded-[30px] p-2.5 pl-4 shadow-[0_20px_50px_rgba(0,0,0,0.6)]">
-                                 <Tooltip text="Close Session" position="top"><button onClick={() => {setLayers([]); setHistory([]); setHistoryStep(-1);}} className="w-10 h-10 flex items-center justify-center rounded-2xl text-gray-500 hover:text-red-400 transition-colors flex items-center justify-center"><IconX className="w-5 h-5"/></button></Tooltip>
+                                 <Tooltip text="Close Session" position="top"><button onClick={() => {setLayers([]); setHistory([]); setHistoryStep(-1);}} className="w-10 h-10 flex items-center justify-center rounded-2xl text-gray-500 hover:text-red-400 transition-colors flex items-center justify-center flex items-center justify-center"><IconX className="w-5 h-5"/></button></Tooltip>
                                  <div className="h-6 w-px bg-white/10"></div>
                                  <input type="text" value={editPrompt} onChange={e => setEditPrompt(e.target.value)} placeholder="Describe magic change..." className="flex-1 bg-transparent border-none outline-none text-white font-bold text-sm md:text-base"/>
                                  <Tooltip text="Run AI In-painting" position="top">
-                                   <button onClick={handleMagicEdit} disabled={isEditing || !editPrompt} className={`h-11 px-8 rounded-[22px] font-black uppercase tracking-widest text-[10px] text-white shadow-xl transition-all flex items-center gap-3 ${isEditing || !editPrompt ? 'bg-gray-800 text-gray-600' : 'bg-indigo-600 hover:bg-indigo-500 active:scale-95'} flex items-center justify-center`}>{isEditing ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <><span className="hidden sm:inline">Apply Magic</span><IconWand className="w-4.5 h-4.5"/></>}</button>
+                                   <button onClick={handleMagicEdit} disabled={isEditing || !editPrompt} className={`h-11 px-8 rounded-[22px] font-black uppercase tracking-widest text-[10px] text-white shadow-xl transition-all flex items-center gap-3 ${isEditing || !editPrompt ? 'bg-gray-800 text-gray-600' : 'bg-indigo-600 hover:bg-indigo-500 active:scale-95'} flex items-center justify-center flex items-center justify-center`}>{isEditing ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"/> : <><span className="hidden sm:inline">Apply Magic</span><IconWand className="w-4.5 h-4.5"/></>}</button>
                                  </Tooltip>
                               </div>
                            </div>
@@ -1274,9 +1360,9 @@ const App: React.FC = () => {
                     ) : (
                         <div className="absolute bottom-24 md:bottom-12 left-0 right-0 z-40 px-6 flex justify-center pointer-events-none">
                             <div className="pointer-events-auto flex gap-4 bg-gray-950/90 backdrop-blur-xl border border-white/10 rounded-full p-2 pr-6 shadow-2xl">
-                                <button onClick={toggleCrop} className="w-12 h-12 flex items-center justify-center rounded-full text-gray-500 hover:text-red-400 hover:bg-white/5 transition-all flex items-center justify-center"><IconX className="w-6 h-6"/></button>
+                                <button onClick={toggleCrop} className="w-12 h-12 flex items-center justify-center rounded-full text-gray-500 hover:text-red-400 hover:bg-white/5 transition-all flex items-center justify-center flex items-center justify-center"><IconX className="w-6 h-6"/></button>
                                 <div className="h-12 w-px bg-white/10"></div>
-                                <button onClick={applyCrop} className="flex items-center gap-3 h-12 px-8 bg-indigo-600 text-white rounded-full font-black uppercase text-xs tracking-widest hover:bg-indigo-500 transition-all shadow-lg active:scale-95 flex items-center justify-center"><IconCheck className="w-5 h-5"/> Apply Crop</button>
+                                <button onClick={applyCrop} className="flex items-center gap-3 h-12 px-8 bg-indigo-600 text-white rounded-full font-black uppercase text-xs tracking-widest hover:bg-indigo-500 transition-all shadow-lg active:scale-95 flex items-center justify-center flex items-center justify-center"><IconCheck className="w-5 h-5"/> Apply Crop</button>
                             </div>
                         </div>
                     )}
@@ -1284,12 +1370,12 @@ const App: React.FC = () => {
                    {editedImages.length > 0 && (
                       <div className="fixed inset-0 z-[100] bg-black/95 backdrop-blur flex items-center justify-center p-6 animate-fade-in">
                         <div className="bg-[#0c0c0e] rounded-[40px] p-8 max-w-2xl w-full border border-white/10 relative shadow-2xl">
-                           <button onClick={() => setEditedImages([])} className="absolute -top-4 -right-4 p-3 bg-gray-900 rounded-2xl text-white shadow-xl transition-all hover:rotate-90 flex items-center justify-center"><IconX className="w-5 h-5"/></button>
+                           <button onClick={() => setEditedImages([])} className="absolute -top-4 -right-4 p-3 bg-gray-900 rounded-2xl text-white shadow-xl transition-all hover:rotate-90 flex items-center justify-center flex items-center justify-center"><IconX className="w-5 h-5"/></button>
                            <h2 className="text-2xl font-black uppercase mb-8 text-white tracking-widest">Magic Result</h2>
                            <div className="grid grid-cols-1 gap-6">
                               {editedImages.map((src, i) => (
                                 <div key={i} className="relative rounded-[32px] overflow-hidden group bg-black shadow-2xl border border-white/5">
-                                  <img src={src} className="w-full max-h-[50vh] object-contain" alt="AI Edited Result"/><div className="absolute bottom-6 left-6 right-6 flex gap-4 opacity-0 group-hover:opacity-100 transition-all translate-y-2 group-hover:translate-y-0"><button onClick={() => handleApplyResult(src)} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-2xl flex items-center justify-center gap-3 hover:bg-indigo-500 transition-all active:scale-95 flex items-center justify-center"><IconCheck className="w-5 h-5"/> Add as Layer</button><button onClick={() => downloadImage(src, 'magic.png')} className="py-4 px-6 bg-white/10 backdrop-blur-md text-white rounded-2xl border border-white/20 hover:bg-white/20 transition-all flex items-center justify-center"><IconDownload className="w-5 h-5"/></button></div>
+                                  <img src={src} className="w-full max-h-[50vh] object-contain" alt="AI Edited Result"/><div className="absolute bottom-6 left-6 right-6 flex gap-4 opacity-0 group-hover:opacity-100 transition-all translate-y-2 group-hover:translate-y-0"><button onClick={() => handleApplyResult(src)} className="flex-1 py-4 bg-indigo-600 text-white rounded-2xl font-black uppercase text-[10px] tracking-widest shadow-2xl flex items-center justify-center gap-3 hover:bg-indigo-500 transition-all active:scale-95 flex items-center justify-center flex items-center justify-center"><IconCheck className="w-5 h-5"/> Add as Layer</button><button onClick={() => downloadImage(src, 'magic.png')} className="py-4 px-6 bg-white/10 backdrop-blur-md text-white rounded-2xl border border-white/20 hover:bg-white/20 transition-all flex items-center justify-center flex items-center justify-center"><IconDownload className="w-5 h-5"/></button></div>
                                 </div>
                               ))}
                            </div>
@@ -1305,7 +1391,7 @@ const App: React.FC = () => {
           <div className="flex-1 overflow-y-auto p-6 animate-fade-in pb-32">
             <div className="max-w-6xl mx-auto"><h2 className="text-3xl font-black tracking-tight mb-8 text-white">Magic Gallery</h2>
               {galleryItems.length === 0 ? <div className="text-center py-32 text-gray-500"><div className="flex items-center justify-center mb-4 opacity-20"><IconHistory className="w-16 h-16" /></div><p>Your creations will appear here.</p></div> : <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">{galleryItems.map(item => (
-                <div key={item.id} className="group relative bg-gray-900/50 rounded-[32px] overflow-hidden border border-white/5 shadow-xl transition-all hover:scale-[1.02] hover:shadow-indigo-500/5"><img src={item.src} className="w-full h-64 object-cover" alt="Gallery item" /><div className="p-6"><div className="flex justify-between items-start mb-3"><span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${item.type === 'generated' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-purple-500/20 text-purple-400'}`}>{item.type}</span><span className="text-[10px] text-gray-600 font-bold">{new Date(item.timestamp).toLocaleDateString()}</span></div><p className="text-sm text-gray-300 font-medium line-clamp-2">{item.prompt}</p></div><div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4"><button onClick={() => downloadImage(item.src, 'gallery.png')} className="p-4 bg-white/10 backdrop-blur rounded-full text-white hover:scale-110 transition-all flex items-center justify-center"><IconDownload className="w-6 h-6"/></button><button onClick={() => { if(confirm('Delete?')) deleteItem(item.id).then(loadGallery); }} className="p-4 bg-red-500/20 rounded-full text-red-400 hover:scale-110 transition-all flex items-center justify-center"><IconTrash className="w-6 h-6"/></button></div></div>
+                <div key={item.id} className="group relative bg-gray-900/50 rounded-[32px] overflow-hidden border border-white/5 shadow-xl transition-all hover:scale-[1.02] hover:shadow-indigo-500/5"><img src={item.src} className="w-full h-64 object-cover" alt="Gallery item" /><div className="p-6"><div className="flex justify-between items-start mb-3"><span className={`text-[9px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full ${item.type === 'generated' ? 'bg-indigo-500/20 text-indigo-400' : 'bg-purple-500/20 text-purple-400'}`}>{item.type}</span><span className="text-[10px] text-gray-600 font-bold">{new Date(item.timestamp).toLocaleDateString()}</span></div><p className="text-sm text-gray-300 font-medium line-clamp-2">{item.prompt}</p></div><div className="absolute inset-0 bg-black/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-4"><button onClick={() => downloadImage(item.src, 'gallery.png')} className="p-4 bg-white/10 backdrop-blur rounded-full text-white hover:scale-110 transition-all flex items-center justify-center flex items-center justify-center"><IconDownload className="w-6 h-6"/></button><button onClick={() => { if(confirm('Delete?')) deleteItem(item.id).then(loadGallery); }} className="p-4 bg-red-500/20 rounded-full text-red-400 hover:scale-110 transition-all flex items-center justify-center flex items-center justify-center"><IconTrash className="w-6 h-6"/></button></div></div>
               ))}</div>}
             </div>
           </div>
